@@ -1,5 +1,4 @@
 #include "MainLayout.h"
-#include "panels/ViewportPanel.h"
 #include "panels/SceneGraphPanel.h"
 #include "panels/TimelinePanel.h"
 #include "panels/ClipBinPanel.h"
@@ -176,7 +175,7 @@ void MainLayout::DrawStatusBar() {
 }
 
 void MainLayout::DrawSceneEditorPanels() {
-    ViewportPanel::Draw();
+    m_viewport.Draw();
     SceneGraphPanel::Draw();
     TimelinePanel::Draw();
     ClipBinPanel::Draw();

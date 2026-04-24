@@ -78,6 +78,27 @@ else()
     target_link_libraries(imgui PUBLIC OpenGL::GL)
 endif()
 
+# ── glad2 (OpenGL 4.5 Core loader) ────────────────────────────────────────
+FetchContent_Declare(glad2
+    GIT_REPOSITORY https://github.com/Dav1dde/glad.git
+    GIT_TAG        glad2
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  cmake
+)
+FetchContent_MakeAvailable(glad2)
+glad_add_library(glad_gl_45_core STATIC REPRODUCIBLE
+    API gl:core=4.5
+    EXTENSIONS NONE
+)
+
+# ── glm (header-only math) ────────────────────────────────────────────────
+FetchContent_Declare(glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG        1.0.1
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(glm)
+
 # ── imgui-node-editor ─────────────────────────────────────────────────────
 FetchContent_Declare(imgui_node_editor
     GIT_REPOSITORY https://github.com/thedmd/imgui-node-editor.git

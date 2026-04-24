@@ -2,41 +2,51 @@
 #include <imgui.h>
 
 void ViewportPanel::Draw() {
+    if (!m_initialized) {
+        m_renderer.Init();
+        m_initialized = true;
+    }
+
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::Begin("Viewport");
+    bool open = ImGui::Begin("Viewport");
     ImGui::PopStyleVar();
 
+    if (!open) {
+        ImGui::End();
+        return;
+    }
+
     ImVec2 size = ImGui::GetContentRegionAvail();
-    if (size.x < 1) size.x = 1;
-    if (size.y < 1) size.y = 1;
 
-    // Draw a dark background with a subtle grid hint and placeholder text.
-    ImDrawList* dl  = ImGui::GetWindowDrawList();
-    ImVec2      pos = ImGui::GetCursorScreenPos();
-    ImVec2      end = { pos.x + size.x, pos.y + size.y };
+    if (size.x > 1.0f && size.y > 1.0f) {
+        // ── Mouse input ───────────────────────────────────────────────────────
+        if (ImGui::IsWindowHovered()) {
+            ImGuiIO& io = ImGui::GetIO();
 
-    // Background
-    dl->AddRectFilled(pos, end, IM_COL32(12, 13, 16, 255));
+            // Left drag: orbit
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+                m_camera.Orbit(io.MouseDelta.x * 0.5f, -io.MouseDelta.y * 0.5f);
 
-    // Faint grid lines (every 40px) to suggest the floor plane
-    const float grid = 40.0f;
-    const ImU32 gridCol = IM_COL32(30, 35, 45, 255);
-    for (float x = pos.x; x < end.x; x += grid)
-        dl->AddLine({ x, pos.y }, { x, end.y }, gridCol);
-    for (float y = pos.y; y < end.y; y += grid)
-        dl->AddLine({ pos.x, y }, { end.x, y }, gridCol);
+            // Right drag: pan
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
+                m_camera.Pan(io.MouseDelta.x, -io.MouseDelta.y);
 
-    // Border
-    dl->AddRect(pos, end, IM_COL32(40, 55, 90, 200));
+            // Scroll: zoom
+            if (io.MouseWheel != 0.0f)
+                m_camera.Zoom(io.MouseWheel);
+        }
 
-    // Centred placeholder label
-    const char* label = "3D Viewport  —  Phase 2";
-    ImVec2      ts    = ImGui::CalcTextSize(label);
-    dl->AddText(
-        { pos.x + (size.x - ts.x) * 0.5f, pos.y + (size.y - ts.y) * 0.5f },
-        IM_COL32(60, 90, 140, 200), label);
+        // ── Render scene to FBO then display as image ─────────────────────────
+        m_renderer.Resize(static_cast<int>(size.x), static_cast<int>(size.y));
+        m_renderer.Render(m_camera);
 
-    ImGui::Dummy(size); // consume layout space
+        // Flip V: OpenGL origin is bottom-left, ImGui is top-left
+        ImGui::Image(
+            (ImTextureID)(intptr_t)m_renderer.ColorTexture(),
+            size,
+            ImVec2(0, 1), ImVec2(1, 0)
+        );
+    }
 
     ImGui::End();
 }

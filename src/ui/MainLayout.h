@@ -1,5 +1,6 @@
 #pragma once
 #include <imgui.h>
+#include "panels/ViewportPanel.h"
 
 enum class EditorMode : int {
     SceneEditor = 0,
@@ -24,7 +25,8 @@ private:
     // Skipped once sct_layout.ini exists.
     void SetupDefaultLayout(ImGuiID dockspace_id);
 
-    EditorMode  m_mode              = EditorMode::SceneEditor;
-    bool        m_layoutInitialized = false;
-    const char* m_status            = "Ready";
+    EditorMode    m_mode              = EditorMode::SceneEditor;
+    bool          m_layoutInitialized = false;
+    const char*   m_status            = "Ready";
+    ViewportPanel m_viewport;
 };

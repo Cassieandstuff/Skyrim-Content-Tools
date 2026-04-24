@@ -1,11 +1,8 @@
 #include "App.h"
 #include "ui/MainLayout.h"
 
-#ifdef _WIN32
-#  define WIN32_LEAN_AND_MEAN
-#  include <windows.h>
-#endif
-
+#include <glad/gl.h>
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -44,6 +41,13 @@ bool App::Init(const char* title, int width, int height) {
 
     glfwMakeContextCurrent(m_window);
     glfwSwapInterval(1); // vsync
+
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
+        fprintf(stderr, "SCT: gladLoadGL failed\n");
+        glfwDestroyWindow(m_window);
+        glfwTerminate();
+        return false;
+    }
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();

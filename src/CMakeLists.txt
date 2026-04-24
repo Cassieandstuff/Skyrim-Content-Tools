@@ -12,6 +12,8 @@ target_include_directories(SkyrimContentTools PRIVATE
 target_link_libraries(SkyrimContentTools PRIVATE
     imgui
     imgui-node-editor
+    glad_gl_45_core
+    glm::glm
     glfw
 )
 
