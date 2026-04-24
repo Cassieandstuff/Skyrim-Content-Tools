@@ -1,16 +1,12 @@
 #pragma once
-#include "Renderer.h"
 #include "Camera.h"
 
-// Phase 2: render-to-texture viewport with orbit camera and grid floor.
+// Phase 2: 3D viewport drawn via ImGui DrawList (manual perspective projection).
 // Left-drag to orbit, right-drag to pan, scroll to zoom.
+// Phase 3+ will layer FBO-rendered meshes on top of this.
 class ViewportPanel {
 public:
-    ~ViewportPanel() { m_renderer.Shutdown(); }
     void Draw();
-
 private:
-    Renderer m_renderer;
-    Camera   m_camera;
-    bool     m_initialized = false;
+    Camera m_camera;
 };
