@@ -46,6 +46,15 @@ set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfw)
 
+# ── glad (bundled pre-generated OpenGL 4.5 Core loader) ───────────────────
+# Must come before imgui so imgui_impl_opengl3.cpp can find <glad/gl.h>.
+add_library(glad_gl_45_core STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/glad/src/gl.c"
+)
+target_include_directories(glad_gl_45_core PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/glad/include"
+)
+
 # ── Dear ImGui (docking branch) ───────────────────────────────────────────
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -67,7 +76,8 @@ target_include_directories(imgui PUBLIC
     "${imgui_SOURCE_DIR}"
     "${imgui_SOURCE_DIR}/backends"
 )
-target_link_libraries(imgui PUBLIC glfw)
+# Link glad_gl_45_core so imgui_impl_opengl3.cpp finds <glad/gl.h> in its include path
+target_link_libraries(imgui PUBLIC glfw glad_gl_45_core)
 target_compile_definitions(imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
 set_target_properties(imgui PROPERTIES CXX_STANDARD 17)
 
@@ -77,19 +87,6 @@ else()
     find_package(OpenGL REQUIRED)
     target_link_libraries(imgui PUBLIC OpenGL::GL)
 endif()
-
-# ── glad2 (OpenGL 4.5 Core loader) ────────────────────────────────────────
-FetchContent_Declare(glad2
-    GIT_REPOSITORY https://github.com/Dav1dde/glad.git
-    GIT_TAG        glad2
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  cmake
-)
-FetchContent_MakeAvailable(glad2)
-glad_add_library(glad_gl_45_core STATIC REPRODUCIBLE
-    API gl:core=4.5
-    EXTENSIONS NONE
-)
 
 # ── glm (header-only math) ────────────────────────────────────────────────
 FetchContent_Declare(glm
