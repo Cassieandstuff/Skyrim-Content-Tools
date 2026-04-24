@@ -30,7 +30,7 @@ static GLuint CompileProgram(const char* vert, const char* frag) {
         GLint ok = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
         if (!ok) {
             char log[512]; glGetShaderInfoLog(s, 512, nullptr, log);
-            fprintf(stderr, "SCT shader error: %s\n", log);
+            fprintf(stderr, "SCT: shader compile error:\n%s\n", log);
         }
         return s;
     };
@@ -40,6 +40,11 @@ static GLuint CompileProgram(const char* vert, const char* frag) {
     glAttachShader(p, vs); glAttachShader(p, fs);
     glLinkProgram(p);
     glDeleteShader(vs);    glDeleteShader(fs);
+    GLint ok = 0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[512]; glGetProgramInfoLog(p, 512, nullptr, log);
+        fprintf(stderr, "SCT: program link error:\n%s\n", log);
+    }
     return p;
 }
 
@@ -149,7 +154,7 @@ void Renderer::Render(const Camera& cam) {
     glViewport(0, 0, m_width, m_height);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glClearColor(0.12f, 0.13f, 0.16f, 1.0f);
+    glClearColor(0.11f, 0.13f, 0.20f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glm::mat4 vp = cam.Proj((float)m_width / (float)m_height) * cam.View();
@@ -159,19 +164,25 @@ void Renderer::Render(const Camera& cam) {
     GLint colorLoc = glGetUniformLocation(m_shader, "uColor");
     glUniformMatrix4fv(vpLoc, 1, GL_FALSE, glm::value_ptr(vp));
 
+    glLineWidth(1.0f);
+
     // Minor grid
-    glUniform4f(colorLoc, 0.22f, 0.22f, 0.26f, 1.0f);
+    glUniform4f(colorLoc, 0.38f, 0.38f, 0.50f, 1.0f);
     glBindVertexArray(m_gridVao);
     glDrawArrays(GL_LINES, 0, m_gridVerts);
 
+    glLineWidth(2.0f);
+
     // X axis (red)
-    glUniform4f(colorLoc, 0.70f, 0.18f, 0.18f, 1.0f);
+    glUniform4f(colorLoc, 0.85f, 0.22f, 0.22f, 1.0f);
     glBindVertexArray(m_axisVao);
     glDrawArrays(GL_LINES, 0, 2);
 
     // Z axis (blue)
-    glUniform4f(colorLoc, 0.18f, 0.35f, 0.75f, 1.0f);
+    glUniform4f(colorLoc, 0.22f, 0.45f, 0.90f, 1.0f);
     glDrawArrays(GL_LINES, 2, 2);
+
+    glLineWidth(1.0f);
 
     glBindVertexArray(0);
     glUseProgram(0);

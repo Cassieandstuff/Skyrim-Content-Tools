@@ -20,15 +20,21 @@ void ViewportPanel::Draw() {
 
     if (size.x > 1.0f && size.y > 1.0f) {
         // ── Mouse input ───────────────────────────────────────────────────────
-        if (ImGui::IsWindowHovered()) {
+        // AllowWhenBlockedByActiveItem lets drags continue when ImGui has an
+        // active item (e.g. a docking drag on another panel).
+        constexpr ImGuiHoveredFlags kHoverFlags =
+            ImGuiHoveredFlags_AllowWhenBlockedByActiveItem |
+            ImGuiHoveredFlags_AllowWhenBlockedByPopup;
+
+        if (ImGui::IsWindowHovered(kHoverFlags)) {
             ImGuiIO& io = ImGui::GetIO();
 
             // Left drag: orbit
-            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 1.0f))
                 m_camera.Orbit(io.MouseDelta.x * 0.5f, -io.MouseDelta.y * 0.5f);
 
             // Right drag: pan
-            if (ImGui::IsMouseDragging(ImGuiMouseButton_Right))
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Right, 1.0f))
                 m_camera.Pan(io.MouseDelta.x, -io.MouseDelta.y);
 
             // Scroll: zoom
