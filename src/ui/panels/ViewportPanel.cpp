@@ -30,14 +30,19 @@ void ViewportPanel::Draw() {
     // InvisibleButton owns the content rect so hover/active work reliably
     // even inside a docked window.
     ImGui::InvisibleButton("##vp", size,
-        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        ImGuiButtonFlags_MouseButtonLeft  |
+        ImGuiButtonFlags_MouseButtonRight |
+        ImGuiButtonFlags_MouseButtonMiddle);
 
     if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
         ImGuiIO& io = ImGui::GetIO();
-        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left,  1.0f))
-            m_camera.Orbit(io.MouseDelta.x * 0.5f, -io.MouseDelta.y * 0.5f);
-        if (ImGui::IsMouseDragging(ImGuiMouseButton_Right, 1.0f))
-            m_camera.Pan(io.MouseDelta.x, -io.MouseDelta.y);
+        // Blender-style: MMB = orbit, Shift+MMB = pan, scroll = zoom
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 1.0f)) {
+            if (io.KeyShift)
+                m_camera.Pan(io.MouseDelta.x, -io.MouseDelta.y);
+            else
+                m_camera.Orbit(-io.MouseDelta.x * 0.5f, io.MouseDelta.y * 0.5f);
+        }
         if (io.MouseWheel != 0.0f)
             m_camera.Zoom(io.MouseWheel);
     }
