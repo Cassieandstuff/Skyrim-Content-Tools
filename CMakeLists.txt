@@ -96,6 +96,15 @@ FetchContent_Declare(glm
 )
 FetchContent_MakeAvailable(glm)
 
+# ── pugixml (XML parsing for Havok skeleton/behavior files) ──────────────
+FetchContent_Declare(pugixml
+    GIT_REPOSITORY https://github.com/zeux/pugixml.git
+    GIT_TAG        v1.14
+    GIT_SHALLOW    TRUE
+)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(pugixml)
+
 # ── imgui-node-editor ─────────────────────────────────────────────────────
 FetchContent_Declare(imgui_node_editor
     GIT_REPOSITORY https://github.com/thedmd/imgui-node-editor.git

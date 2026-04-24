@@ -15,7 +15,12 @@ target_link_libraries(SkyrimContentTools PRIVATE
     glad_gl_45_core
     glm::glm
     glfw
+    pugixml
 )
+
+if(WIN32)
+    target_link_libraries(SkyrimContentTools PRIVATE comdlg32)
+endif()
 
 if(DEFINED HKBUILD_EXE)
     target_compile_definitions(SkyrimContentTools PRIVATE HKBUILD_EXE="${HKBUILD_EXE}")
