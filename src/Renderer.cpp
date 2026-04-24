@@ -4,18 +4,26 @@
 #include <cstdio>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static void DbgPrint(const char* msg) { OutputDebugStringA(msg); }
+#else
+static void DbgPrint(const char* msg) { fputs(msg, stderr); }
+#endif
+
 // ---------------------------------------------------------------------------
-// Shader source
+// Shader source — 330 core is sufficient and avoids any 4.5-specific issues
 // ---------------------------------------------------------------------------
 static const char* kVert = R"(
-#version 450 core
+#version 330 core
 layout(location = 0) in vec3 aPos;
 uniform mat4 uViewProj;
 void main() { gl_Position = uViewProj * vec4(aPos, 1.0); }
 )";
 
 static const char* kFrag = R"(
-#version 450 core
+#version 330 core
 uniform vec4 uColor;
 out vec4 FragColor;
 void main() { FragColor = uColor; }
@@ -23,28 +31,38 @@ void main() { FragColor = uColor; }
 
 // ---------------------------------------------------------------------------
 static GLuint CompileProgram(const char* vert, const char* frag) {
-    auto compile = [](GLenum type, const char* src) -> GLuint {
+    char buf[1024];
+
+    auto compile = [&](GLenum type, const char* src) -> GLuint {
         GLuint s = glCreateShader(type);
         glShaderSource(s, 1, &src, nullptr);
         glCompileShader(s);
         GLint ok = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
         if (!ok) {
-            char log[512]; glGetShaderInfoLog(s, 512, nullptr, log);
-            fprintf(stderr, "SCT: shader compile error:\n%s\n", log);
+            glGetShaderInfoLog(s, sizeof(buf), nullptr, buf);
+            snprintf(buf + 800, 200, "\nSCT shader compile error (type=%u)\n", type);
+            DbgPrint(buf);
         }
         return s;
     };
+
     GLuint vs = compile(GL_VERTEX_SHADER,   vert);
     GLuint fs = compile(GL_FRAGMENT_SHADER, frag);
     GLuint p  = glCreateProgram();
     glAttachShader(p, vs); glAttachShader(p, fs);
     glLinkProgram(p);
     glDeleteShader(vs);    glDeleteShader(fs);
+
     GLint ok = 0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
     if (!ok) {
-        char log[512]; glGetProgramInfoLog(p, 512, nullptr, log);
-        fprintf(stderr, "SCT: program link error:\n%s\n", log);
+        glGetProgramInfoLog(p, sizeof(buf), nullptr, buf);
+        DbgPrint("SCT program link error:\n");
+        DbgPrint(buf);
+        DbgPrint("\n");
     }
+
+    snprintf(buf, sizeof(buf), "SCT: program=%u link=%s\n", p, ok ? "OK" : "FAIL");
+    DbgPrint(buf);
     return p;
 }
 
@@ -53,6 +71,12 @@ void Renderer::Init() {
     if (m_ready) return;
     m_shader = CompileProgram(kVert, kFrag);
     BuildGrid();
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "SCT: Init done — shader=%u gridVao=%u axisVao=%u verts=%d\n",
+             m_shader, m_gridVao, m_axisVao, m_gridVerts);
+    DbgPrint(buf);
+
     m_ready = true;
 }
 
@@ -72,18 +96,15 @@ void Renderer::Shutdown() {
 
 // ---------------------------------------------------------------------------
 void Renderer::BuildGrid() {
-    constexpr int kHalf  = 10;
-    constexpr int kSteps = kHalf * 2; // 20 intervals → 21 lines each direction
+    constexpr int kHalf = 10;
 
-    std::vector<float> grid; // minor grid lines (excluding centre axes)
-    grid.reserve(kSteps * 2 * 3 * 2);
+    std::vector<float> grid;
+    grid.reserve(kHalf * 2 * 2 * 6);
 
     for (int i = -kHalf; i <= kHalf; ++i) {
         if (i == 0) continue;
         float f = static_cast<float>(i);
-        // Line along Z at x = f
         grid.insert(grid.end(), { f, 0.f, -(float)kHalf,  f, 0.f, (float)kHalf });
-        // Line along X at z = f
         grid.insert(grid.end(), { -(float)kHalf, 0.f, f,  (float)kHalf, 0.f, f });
     }
     m_gridVerts = static_cast<int>(grid.size()) / 3;
@@ -91,20 +112,19 @@ void Renderer::BuildGrid() {
     glGenVertexArrays(1, &m_gridVao); glGenBuffers(1, &m_gridVbo);
     glBindVertexArray(m_gridVao);
     glBindBuffer(GL_ARRAY_BUFFER, m_gridVbo);
-    glBufferData(GL_ARRAY_BUFFER, grid.size() * sizeof(float), grid.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(grid.size() * sizeof(float)), grid.data(), GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
 
-    // Axis lines: X (red) then Z (blue) — 4 vertices total
     float axes[] = {
-        -(float)kHalf, 0.f, 0.f,   (float)kHalf, 0.f, 0.f,   // X axis
-         0.f, 0.f, -(float)kHalf,   0.f, 0.f, (float)kHalf,   // Z axis
+        -(float)kHalf, 0.f, 0.f,   (float)kHalf, 0.f, 0.f,
+         0.f, 0.f, -(float)kHalf,   0.f, 0.f, (float)kHalf,
     };
     glGenVertexArrays(1, &m_axisVao); glGenBuffers(1, &m_axisVbo);
     glBindVertexArray(m_axisVao);
     glBindBuffer(GL_ARRAY_BUFFER, m_axisVbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(axes), axes, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(axes), axes, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
@@ -137,6 +157,12 @@ void Renderer::Resize(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_colorTex, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_depthRbo);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        char buf[64]; snprintf(buf, sizeof(buf), "SCT: FBO incomplete: 0x%X\n", status);
+        DbgPrint(buf);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -144,10 +170,9 @@ void Renderer::Resize(int w, int h) {
 void Renderer::Render(const Camera& cam) {
     if (!m_ready || !m_fbo) return;
 
-    // Save state we're about to clobber
-    GLint  prevFbo = 0;      glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevFbo);
-    GLint  prevVp[4] = {};   glGetIntegerv(GL_VIEWPORT, prevVp);
-    GLboolean depthWasOn = glIsEnabled(GL_DEPTH_TEST);
+    // Save state
+    GLint prevFbo = 0; glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevFbo);
+    GLint prevVp[4] = {}; glGetIntegerv(GL_VIEWPORT, prevVp);
 
     // Render to FBO
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
@@ -160,8 +185,19 @@ void Renderer::Render(const Camera& cam) {
     glm::mat4 vp = cam.Proj((float)m_width / (float)m_height) * cam.View();
 
     glUseProgram(m_shader);
+
+    // Log uniform locations once on first render
+    static bool s_logged = false;
     GLint vpLoc    = glGetUniformLocation(m_shader, "uViewProj");
     GLint colorLoc = glGetUniformLocation(m_shader, "uColor");
+    if (!s_logged) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "SCT: Render — shader=%u vpLoc=%d colorLoc=%d fbo=%u w=%d h=%d\n",
+                 m_shader, vpLoc, colorLoc, m_fbo, m_width, m_height);
+        DbgPrint(buf);
+        s_logged = true;
+    }
+
     glUniformMatrix4fv(vpLoc, 1, GL_FALSE, glm::value_ptr(vp));
 
     glLineWidth(1.0f);
@@ -183,12 +219,11 @@ void Renderer::Render(const Camera& cam) {
     glDrawArrays(GL_LINES, 2, 2);
 
     glLineWidth(1.0f);
-
     glBindVertexArray(0);
     glUseProgram(0);
+    glDisable(GL_DEPTH_TEST);
 
-    // Restore state
-    if (!depthWasOn) glDisable(GL_DEPTH_TEST);
+    // Restore
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
     glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
 }
