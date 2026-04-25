@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SctBridge</AssemblyName>
+    <RootNamespace>SctBridge</RootNamespace>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Exclude the HKX2E git submodule from the default **/*.cs glob.
+         Without this, SctBridge compiles HKX2E's source directly AND
+         references HKX2E.dll via ProjectReference, causing CS0436/CS0579. -->
+    <Compile Remove="lib/**" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="lib/HKX2E/HKX2/HKX2E.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Mutagen.Bethesda.Skyrim" Version="0.51.0" />
+  </ItemGroup>
+</Project>

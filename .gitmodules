@@ -1,0 +1,3 @@
+[submodule "sct-bridge/lib/HKX2E"]
+	path = sct-bridge/lib/HKX2E
+	url = https://github.com/Monitor221hz/HKX2-Enhanced-Library
