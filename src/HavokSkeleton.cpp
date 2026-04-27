@@ -41,16 +41,9 @@ static const char* ParseTuple4(const char* p,
 
 // ── main loader ──────────────────────────────────────────────────────────────
 
-bool LoadHavokSkeletonXml(const char* path, Skeleton& out,
-                           char* errOut, int errLen)
+static bool ParseSkeletonDoc(const pugi::xml_document& doc,
+                              Skeleton& out, char* errOut, int errLen)
 {
-    pugi::xml_document doc;
-    auto res = doc.load_file(path);
-    if (!res) {
-        std::snprintf(errOut, errLen, "XML: %s", res.description());
-        return false;
-    }
-
     // Walk __data__ section for the first hkaSkeleton object
     pugi::xml_node skelNode;
     auto section = doc.child("hkpackfile").child("hksection");
@@ -95,7 +88,7 @@ bool LoadHavokSkeletonXml(const char* path, Skeleton& out,
         names.emplace_back(np ? np.text().as_string() : "");
     }
 
-    // referencePose
+    // referencePose — stored as local transforms per bone
     auto rpNode = skelNode.find_child_by_attribute("hkparam", "name", "referencePose");
     if (!rpNode) {
         std::snprintf(errOut, errLen, "Missing referencePose");
@@ -106,38 +99,56 @@ bool LoadHavokSkeletonXml(const char* path, Skeleton& out,
     {
         const char* p = rpNode.text().as_string();
         for (int i = 0; i < n; i++) {
-            float x,y,z, qx,qy,qz,qw, sx,sy,sz;
+            float x, y, z, qx, qy, qz, qw, sx, sy, sz;
             p = ParseTuple3(p, x, y, z);
             p = ParseTuple4(p, qx, qy, qz, qw);
             p = ParseTuple3(p, sx, sy, sz);
-            localT[i] = {x, y, z};
+            localT[i] = { x, y, z };
             localR[i] = glm::quat(qw, qx, qy, qz); // glm: (w, x, y, z)
         }
     }
 
-    // Forward kinematics — Havok guarantees parents come before children
-    std::vector<glm::vec3> worldT(n);
-    std::vector<glm::quat> worldR(n);
-    for (int i = 0; i < n; i++) {
-        int p = parents[i];
-        if (p < 0) {
-            worldT[i] = localT[i];
-            worldR[i] = localR[i];
-        } else {
-            worldT[i] = worldR[p] * localT[i] + worldT[p];
-            worldR[i] = worldR[p] * localR[i];
-        }
-    }
-
-    // Build output — swap Y↔Z to convert Havok Z-up → viewport Y-up
+    // Build output — local ref pose stored per bone; FK lives in Pose::SolveFK()
     out.bones.resize(n);
-    out.worldPos.resize(n);
     for (int i = 0; i < n; i++) {
         out.bones[i].name   = i < static_cast<int>(names.size()) ? names[i] : "";
         out.bones[i].parent = parents[i];
-        const auto& t = worldT[i];
-        out.worldPos[i] = glm::vec3(t.x, t.z, t.y); // Z-up → Y-up
+        out.bones[i].refT   = localT[i];
+        out.bones[i].refR   = localR[i];
     }
 
     return true;
+}
+
+bool LoadHavokSkeletonXml(const char* path, Skeleton& out, char* errOut, int errLen)
+{
+    pugi::xml_document doc;
+    auto res = doc.load_file(path);
+    if (!res) { std::snprintf(errOut, errLen, "XML: %s", res.description()); return false; }
+    return ParseSkeletonDoc(doc, out, errOut, errLen);
+}
+
+bool LoadHavokSkeletonXmlFromBuffer(const char* xmlData, int xmlLen,
+                                    Skeleton& out, char* errOut, int errLen)
+{
+    pugi::xml_document doc;
+    auto res = doc.load_buffer(xmlData, static_cast<size_t>(xmlLen));
+    if (!res) { std::snprintf(errOut, errLen, "XML: %s", res.description()); return false; }
+    return ParseSkeletonDoc(doc, out, errOut, errLen);
+}
+
+// ── reference pose factory ───────────────────────────────────────────────────
+
+Pose Skeleton::MakeReferencePose() const
+{
+    Pose p;
+    const int n = static_cast<int>(bones.size());
+    p.channels.resize(n);
+    p.parents.resize(n);
+    for (int i = 0; i < n; i++) {
+        p.channels[i] = { bones[i].refT, bones[i].refR };
+        p.parents[i]  = bones[i].parent;
+    }
+    p.SolveFK();
+    return p;
 }

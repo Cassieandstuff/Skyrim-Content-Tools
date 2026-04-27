@@ -25,7 +25,7 @@ struct Camera {
     }
 
     glm::mat4 Proj(float aspect) const {
-        return glm::perspective(glm::radians(45.0f), aspect, 0.1f, 500.0f);
+        return glm::perspective(glm::radians(45.0f), aspect, 0.1f, 5'000'000.0f);
     }
 
     void Orbit(float dAz, float dEl) {

@@ -15,19 +15,23 @@ namespace SctBridge;
 /// All methods are [UnmanagedCallersOnly]; caller manages buffer lifetime via sct_free_buffer.
 ///
 /// State model:
-///   s_sourcePlugin  — read-only overlay of the user-selected plugin (+ its declared masters)
-///   s_linkCache     — covers s_sourcePlugin + its masters for full record resolution
+///   s_loadedMods    — all mods in current session (masters first, source/overrides last)
+///   s_linkCache     — covers all s_loadedMods for full record resolution
 ///   s_projectMod    — writable mod; accumulates records created from SCT UI
+///
+/// Load modes:
+///   sct_plugin_load      — single plugin + its declared direct masters
+///   sct_load_order_load  — full load order from plugins.txt (or all ESM/ESP/ESL in data folder)
 /// </summary>
 public static class PluginBridge
 {
     [ThreadStatic]
     private static string? s_lastError;
 
-    private static ISkyrimModGetter? s_sourcePlugin;
-    private static ILinkCache?       s_linkCache;
-    private static SkyrimMod?        s_projectMod;
-    private static string            s_dataFolder = "";
+    private static List<ISkyrimModGetter> s_loadedMods = new();
+    private static ILinkCache?            s_linkCache;
+    private static SkyrimMod?             s_projectMod;
+    private static string                 s_dataFolder = "";
 
     private static readonly JsonSerializerOptions s_json = new()
     {
@@ -37,13 +41,12 @@ public static class PluginBridge
 
     // ── Source plugin ─────────────────────────────────────────────────────────
     //
-    // Loads a plugin as a read-only binary overlay and builds a link cache
-    // covering the plugin plus all masters it declares (Skyrim.esm, Update.esm,
-    // DLC ESMs, etc.).  All downstream record resolution uses this cache.
+    // Loads a plugin as a read-only binary overlay, then loads all masters it
+    // declares so that both link resolution AND NPC search cover the full set.
     //
     // pluginPath   — absolute path to the .esp / .esm / .esl
     // dataFolder   — game Data directory (used to locate master files)
-    // Returns 0 on success, -1 on failure (call sct_plugin_last_error for details).
+    // Returns 0 on success, -1 on failure.
 
     [UnmanagedCallersOnly(EntryPoint = "sct_plugin_load")]
     public static unsafe int PluginLoad(byte* pluginPathUtf8, byte* dataFolderUtf8)
@@ -54,21 +57,27 @@ public static class PluginBridge
                              ?? throw new ArgumentException("null plugin path");
             s_dataFolder   = Marshal.PtrToStringUTF8((IntPtr)dataFolderUtf8) ?? "";
 
-            s_sourcePlugin = SkyrimMod.CreateFromBinaryOverlay(
+            var source = SkyrimMod.CreateFromBinaryOverlay(
                 new ModPath(pluginPath), SkyrimRelease.SkyrimSE);
 
-            // Load declared masters so link resolution can follow cross-plugin
-            // references (e.g. NordRace lives in Skyrim.esm).
+            // Load declared masters (direct only — covers the common Skyrim.esm /
+            // Update.esm case without risk of deep recursive chains).
             var mods = new List<ISkyrimModGetter>();
-            foreach (var master in s_sourcePlugin.MasterReferences)
+            foreach (var master in source.MasterReferences)
             {
                 var masterPath = Path.Combine(s_dataFolder, master.Master.FileName);
                 if (!File.Exists(masterPath)) continue;
-                mods.Add(SkyrimMod.CreateFromBinaryOverlay(
-                    new ModPath(masterPath), SkyrimRelease.SkyrimSE));
+                try
+                {
+                    mods.Add(SkyrimMod.CreateFromBinaryOverlay(
+                        new ModPath(masterPath), SkyrimRelease.SkyrimSE));
+                }
+                catch { /* skip unloadable masters */ }
             }
-            mods.Add(s_sourcePlugin); // highest priority last
-            s_linkCache = mods.ToUntypedImmutableLinkCache();
+            mods.Add(source); // highest priority last
+
+            s_loadedMods = mods;
+            s_linkCache  = s_loadedMods.ToUntypedImmutableLinkCache();
 
             s_lastError = null;
             return 0;
@@ -76,18 +85,93 @@ public static class PluginBridge
         catch (Exception ex) { s_lastError = ex.Message; return -1; }
     }
 
+    // ── Load Order ────────────────────────────────────────────────────────────
+    //
+    // Loads the full active load order into s_loadedMods.
+    // Reads plugins.txt from the standard SE AppData location; falls back to
+    // all ESM/ESL files in the data folder if plugins.txt is not found.
+    // After this call, NpcSearch covers every loaded plugin.
+    //
+    // dataFolder — game Data directory
+    // Returns the number of mods loaded on success, -1 on failure.
+
+    [UnmanagedCallersOnly(EntryPoint = "sct_load_order_load")]
+    public static unsafe int LoadOrderLoad(byte* dataFolderUtf8)
+    {
+        try
+        {
+            s_dataFolder = Marshal.PtrToStringUTF8((IntPtr)dataFolderUtf8) ?? "";
+
+            var pluginNames = ResolveLoadOrder(s_dataFolder);
+
+            var mods = new List<ISkyrimModGetter>();
+            foreach (var name in pluginNames)
+            {
+                var path = Path.Combine(s_dataFolder, name);
+                if (!File.Exists(path)) continue;
+                try
+                {
+                    mods.Add(SkyrimMod.CreateFromBinaryOverlay(
+                        new ModPath(path), SkyrimRelease.SkyrimSE));
+                }
+                catch { /* skip plugins that fail to load */ }
+            }
+
+            s_loadedMods = mods;
+            s_linkCache  = s_loadedMods.ToUntypedImmutableLinkCache();
+            s_lastError  = null;
+            return mods.Count;
+        }
+        catch (Exception ex) { s_lastError = ex.Message; return -1; }
+    }
+
+    /// <summary>
+    /// Returns plugin filenames in load order.  Reads plugins.txt (checking
+    /// standard SSE, GOG, and Xbox Game Pass AppData paths).  Falls back to
+    /// all ESM+ESL files alphabetically if no plugins.txt is found.
+    /// </summary>
+    private static IEnumerable<string> ResolveLoadOrder(string dataFolder)
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string[] candidates =
+        [
+            Path.Combine(appData, "Skyrim Special Edition",      "plugins.txt"),
+            Path.Combine(appData, "Skyrim Special Edition GOG",  "plugins.txt"),
+            Path.Combine(appData, "Skyrim Special Edition MS",   "plugins.txt"),
+        ];
+
+        var pluginsFile = candidates.FirstOrDefault(File.Exists);
+        if (pluginsFile is not null)
+        {
+            // Each enabled line is prefixed with '*'.  Disabled lines have no prefix.
+            return File.ReadAllLines(pluginsFile)
+                .Where(l => l.StartsWith('*'))
+                .Select(l => l[1..].Trim())
+                .Where(l => l.Length > 0);
+        }
+
+        // Fallback: load all ESM/ESL from the data folder (omit loose ESPs —
+        // they have no guaranteed load order without a plugins.txt).
+        return Directory
+            .EnumerateFiles(dataFolder, "*.*", SearchOption.TopDirectoryOnly)
+            .Where(f => { var e = Path.GetExtension(f).ToLower(); return e == ".esm" || e == ".esl"; })
+            .Select(Path.GetFileName)
+            .OfType<string>()
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase);
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "sct_plugin_unload")]
     public static void PluginUnload()
     {
-        s_sourcePlugin = null;
-        s_linkCache    = null;
+        s_loadedMods.Clear();
+        s_linkCache = null;
     }
 
     // ── NPC search ────────────────────────────────────────────────────────────
     //
-    // Searches the loaded source plugin for NPC_ records whose name or EditorID
-    // contains the query string (case-insensitive).  Empty query returns up to
-    // maxResults records from the start of the plugin.
+    // Searches ALL loaded mods (masters + source plugin) for NPC_ records whose
+    // name or EditorID contains the query string (case-insensitive).
+    // Empty query returns up to maxResults records from the combined set.
     //
     // outJson / outLen — CoTaskMem-allocated UTF-8 JSON array; free via sct_free_buffer.
     // Returns 0 on success, -1 on failure.
@@ -100,12 +184,17 @@ public static class PluginBridge
         *outLen  = 0;
         try
         {
-            if (s_sourcePlugin is null)
+            if (s_loadedMods.Count == 0)
                 throw new InvalidOperationException("no plugin loaded — call sct_plugin_load first");
 
             var query   = Marshal.PtrToStringUTF8((IntPtr)queryUtf8) ?? "";
             var cap     = maxResults > 0 ? maxResults : 100;
-            var records = s_sourcePlugin.Npcs
+
+            // Search in reverse priority order so higher-priority records appear first.
+            var records = s_loadedMods
+                .AsEnumerable()
+                .Reverse()
+                .SelectMany(m => m.Npcs)
                 .Where(n => MatchesQuery(n, query))
                 .Take(cap)
                 .Select(ToNpcRecord)
@@ -117,10 +206,6 @@ public static class PluginBridge
     }
 
     // ── NPC get by FormID ─────────────────────────────────────────────────────
-    //
-    // Fetches a single NPC_ record from the source plugin by its local FormID
-    // (the 24-bit ID without the mod-index byte).
-    // Returns 0 on success, -1 on failure.
 
     [UnmanagedCallersOnly(EntryPoint = "sct_npc_get")]
     public static unsafe int NpcGet(uint formId, byte** outJson, int* outLen)
@@ -129,11 +214,14 @@ public static class PluginBridge
         *outLen  = 0;
         try
         {
-            if (s_sourcePlugin is null)
+            if (s_loadedMods.Count == 0)
                 throw new InvalidOperationException("no plugin loaded");
 
-            var npc = s_sourcePlugin.Npcs.FirstOrDefault(n => n.FormKey.ID == formId)
-                      ?? throw new KeyNotFoundException($"FormID {formId:X8} not found");
+            // Search all loaded mods; return highest-priority (last) match.
+            var npc = s_loadedMods
+                .SelectMany(m => m.Npcs)
+                .LastOrDefault(n => n.FormKey.ID == formId)
+                ?? throw new KeyNotFoundException($"FormID {formId:X8} not found");
 
             return WriteJson(ToNpcRecord(npc), outJson, outLen);
         }
@@ -141,9 +229,6 @@ public static class PluginBridge
     }
 
     // ── Project mod ───────────────────────────────────────────────────────────
-    //
-    // SCT keeps a writable project mod separate from the read-only source plugin.
-    // New NPC_ records created from the SCT UI accumulate here.
 
     [UnmanagedCallersOnly(EntryPoint = "sct_project_new")]
     public static unsafe int ProjectNew(byte* modNameUtf8)
@@ -192,14 +277,6 @@ public static class PluginBridge
     }
 
     // ── NPC create ────────────────────────────────────────────────────────────
-    //
-    // Creates a new NPC_ record in the project mod.
-    //
-    // inJson — UTF-8 JSON: { editorId, name, raceFormKey, isFemale }
-    //   raceFormKey format: "RRRRRR:PluginName.esm"  (Mutagen FormKey string)
-    //
-    // outJson / outLen — the created record serialized as NpcRecord JSON.
-    // Returns 0 on success, -1 on failure.
 
     [UnmanagedCallersOnly(EntryPoint = "sct_npc_create")]
     public static unsafe int NpcCreate(byte* inJsonUtf8, byte** outJson, int* outLen)
@@ -264,7 +341,8 @@ public static class PluginBridge
         if (s_linkCache is not null)
         {
             // Race → skeleton NIF path.
-            // C++ uses this to derive creature type + HKX path via ExtractCreatureType().
+            // C++ converts this to an HKX path via a .nif → .hkx extension swap
+            // and a "meshes\" prefix, then auto-matches against discoveredSkeletons.
             if (npc.Race.TryResolve(s_linkCache, out var race))
             {
                 raceEditorId      = race.EditorID;
@@ -274,7 +352,6 @@ public static class PluginBridge
             }
 
             // Head parts → expression TRI path.
-            // HDPT Parts entries with PartType == Tri (NAM0=1) are the runtime expression TRI.
             foreach (var hpLink in npc.HeadParts)
             {
                 if (!hpLink.TryResolve(s_linkCache, out var hp)) continue;
@@ -331,11 +408,9 @@ public static class PluginBridge
         public string? Name              { get; init; }
         public string? RaceEditorId      { get; init; }
         public bool    IsFemale          { get; init; }
-        // Skeleton NIF path from the race record.
-        // C++ derives creature type and HKX path via ExtractCreatureType().
+        // Skeleton NIF path from the race record (relative to Data\Meshes\, no prefix).
+        // e.g. "Actors\Character\Character Assets\Skeleton.nif"
         public string? SkeletonModelPath { get; init; }
-        // Expression TRI path from head part (HDPT Part.PartTypeEnum.Tri).
-        // Null if unresolvable (custom race not in loaded masters).
         public string? ExpressionTriPath { get; init; }
         // Derived: Meshes/Actors/Character/FaceGenData/FaceGeom/{plugin}/{formId}.nif
         public string? FacegenNifPath    { get; init; }
@@ -346,7 +421,6 @@ public static class PluginBridge
     {
         public string? EditorId    { get; init; }
         public string? Name        { get; init; }
-        // Mutagen FormKey string: "RRRRRR:PluginName.esm"
         public string? RaceFormKey { get; init; }
         public bool    IsFemale    { get; init; }
     }

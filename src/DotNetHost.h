@@ -1,0 +1,62 @@
+#pragma once
+#include <cstdint>
+#include <string>
+
+// Bootstraps the .NET 10+ runtime and loads SctBridge.dll in-process once at
+// startup. All functions are safe to call even if Init() failed — they return
+// false / do nothing, so callers don't need to guard every use.
+struct DotNetHost {
+    // Call once before any bridge functions. Returns false if .NET or
+    // SctBridge.dll are unavailable (errOut receives a human-readable reason).
+    static bool Init(char* errOut, int errLen);
+
+    static bool Ready();
+
+    // Deserialize a binary .hkx file to Havok packfile XML in memory.
+    // On success: *xmlOut is a heap buffer of *xmlLen bytes (null-terminated).
+    //             Caller MUST call FreeBuffer(*xmlOut) after use.
+    // On failure: errOut receives the error; returns false.
+    static bool HkxToXml(const char* hkxPath,
+                          char** xmlOut, int* xmlLen,
+                          char* errOut, int errLen);
+
+    static void FreeBuffer(void* ptr);
+
+    // ── Plugin bridge (Mutagen backend) ──────────────────────────────────────
+    // Loaded in Init() alongside the HKX bridge; non-fatal if unavailable.
+
+    static bool PluginReady();
+
+    // Load a plugin as a read-only overlay and build a link cache covering it
+    // and all its declared direct masters. dataFolder = game Data directory.
+    static bool PluginLoad(const char* pluginPath, const char* dataFolder,
+                           char* errOut, int errLen);
+
+    // Load the full active load order from plugins.txt (SE AppData) into the
+    // bridge. Falls back to all ESM/ESL in dataFolder if plugins.txt not found.
+    // Returns the number of mods loaded, or -1 on failure.
+    static int  LoadOrderLoad(const char* dataFolder, char* errOut, int errLen);
+
+    static void PluginUnload();
+
+    // Search NPC_ records; outJson receives a UTF-8 JSON array string.
+    static bool NpcSearch(const char* query, int maxResults,
+                          std::string& outJson,
+                          char* errOut, int errLen);
+
+    // Fetch a single NPC_ by local FormID; outJson receives a JSON object.
+    static bool NpcGet(uint32_t formId,
+                       std::string& outJson,
+                       char* errOut, int errLen);
+
+    // Project mod lifecycle.
+    static bool ProjectNew(const char* modName, char* errOut, int errLen);
+    static bool ProjectLoad(const char* path,   char* errOut, int errLen);
+    static bool ProjectSave(const char* path,   char* errOut, int errLen);
+
+    // Create a new NPC_ record; inJson = NpcCreateRequest JSON,
+    // outJson receives the created NpcRecord as JSON.
+    static bool NpcCreate(const char* inJson,
+                          std::string& outJson,
+                          char* errOut, int errLen);
+};

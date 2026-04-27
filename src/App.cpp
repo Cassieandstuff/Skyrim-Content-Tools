@@ -1,5 +1,6 @@
 #include "App.h"
 #include "ui/MainLayout.h"
+#include "DotNetHost.h"
 
 #include <glad/gl.h>
 #define GLFW_INCLUDE_NONE
@@ -61,16 +62,22 @@ bool App::Init(const char* title, int width, int height) {
 
     ImGui_ImplGlfw_InitForOpenGL(m_window, true);
     ImGui_ImplOpenGL3_Init("#version 450");
+
+    char hostErr[256] = {};
+    if (!DotNetHost::Init(hostErr, sizeof(hostErr)))
+        fprintf(stderr, "SCT: DotNetHost: %s\n", hostErr);
+
     return true;
 }
 
 void App::Run() {
     MainLayout layout;
-    while (!glfwWindowShouldClose(m_window)) {
+    while (!glfwWindowShouldClose(m_window) && !layout.WantsQuit()) {
         glfwPollEvents();
         BeginFrame();
         layout.Draw();
         EndFrame();
+        glfwSetWindowTitle(m_window, layout.GetWindowTitle());
     }
 }
 

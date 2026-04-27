@@ -3,3 +3,9 @@ build-debug/
 out/
 .vs/
 *.user
+
+# dotnet build artifacts (SctBridge C# project)
+sct-bridge/bin/
+sct-bridge/obj/
+# lib/ is no longer a git submodule; HKX2E is fetched into the build tree
+sct-bridge/lib/

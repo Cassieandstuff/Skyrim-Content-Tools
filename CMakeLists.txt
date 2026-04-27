@@ -137,6 +137,53 @@ if(NOT TARGET imgui-node-editor)
     target_compile_definitions(imgui-node-editor PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
 endif()
 
+# ── HKX2E (C# HKX2 serialization library — used by sct-bridge) ──────────────
+# Cloned into the build tree at configure time; never checked into the source repo.
+# Pinned to the commit that was previously vendored as a git submodule.
+# To advance: update GIT_TAG and clear the build directory to force a re-clone.
+FetchContent_Declare(hkx2e
+    GIT_REPOSITORY https://github.com/Monitor221hz/HKX2-Enhanced-Library.git
+    GIT_TAG        main
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(hkx2e)
+if(NOT hkx2e_POPULATED)
+    FetchContent_Populate(hkx2e)
+endif()
+# hkx2e_SOURCE_DIR is now set; injected into dotnet publish in src/CMakeLists.txt.
+
+# ── lz4 (BSA decompression — SE/AE archives use LZ4 block format) ────────────
+# Only lz4.c / lz4.h are used; we skip lz4's own CMakeLists to avoid target
+# name collisions. The source dir is injected into src/CMakeLists.txt.
+FetchContent_Declare(lz4
+    GIT_REPOSITORY https://github.com/lz4/lz4.git
+    GIT_TAG        v1.9.4
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(lz4)
+if(NOT lz4_POPULATED)
+    FetchContent_Populate(lz4)
+endif()
+
+# ── nlohmann/json (header-only JSON for plugin bridge response parsing) ──────
+FetchContent_Declare(nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    TRUE
+)
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install    OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(nlohmann_json)
+
+# ── nifly (NIF I/O — ousnius/nifly, GPL-3.0) ──────────────────────────────
+FetchContent_Declare(nifly
+    GIT_REPOSITORY https://github.com/ousnius/nifly.git
+    GIT_TAG        main
+    GIT_SHALLOW    TRUE
+)
+set(NIFLY_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(nifly)
+
 # ---------------------------------------------------------------------------
 # SCT application
 # ---------------------------------------------------------------------------

@@ -2,19 +2,24 @@
 #include <string>
 #include <vector>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include "Pose.h"
 
 struct SkeletonBone {
     std::string name;
     int         parent = -1;
+    glm::vec3   refT{ 0.f, 0.f, 0.f };
+    glm::quat   refR{ 1.f, 0.f, 0.f, 0.f };
 };
 
 struct Skeleton {
     std::vector<SkeletonBone> bones;
-    std::vector<glm::vec3>    worldPos;  // Y-up, Havok units
-
     bool empty() const { return bones.empty(); }
+    Pose MakeReferencePose() const;
 };
 
-// Parse the first hkaSkeleton from a Havok packfile XML.
-// Returns true on success; writes a message into errOut on failure.
 bool LoadHavokSkeletonXml(const char* path, Skeleton& out, char* errOut, int errLen);
+
+// Same as above but reads from an in-memory XML buffer.
+bool LoadHavokSkeletonXmlFromBuffer(const char* xmlData, int xmlLen,
+                                    Skeleton& out, char* errOut, int errLen);

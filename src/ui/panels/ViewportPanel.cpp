@@ -1,173 +1,264 @@
 #include "ViewportPanel.h"
+#include "AppState.h"
+#include "NifDocument.h"
+#include "Sequence.h"
+#include "HavokSkeleton.h"
 #include <imgui.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <cfloat>
+#include <cstdio>
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#include <commdlg.h>
-#endif
+// ── Construction ──────────────────────────────────────────────────────────────
 
-// Project a world-space point to ImGui screen coordinates.
-// Returns false (and leaves `out` unchanged) when the point is behind the camera.
-static bool Project(const glm::mat4& vp, glm::vec3 w,
-                    ImVec2 origin, ImVec2 size, ImVec2& out)
+ViewportPanel::ViewportPanel(std::vector<ViewportTabDef> tabs, ISceneRenderer& renderer,
+                             const char* panelId)
+    : renderer_(renderer)
+    , tabs_(std::move(tabs))
+    , panelId_(panelId)
 {
-    glm::vec4 clip = vp * glm::vec4(w, 1.0f);
-    if (clip.w <= 0.01f) return false;
-    float nx = clip.x / clip.w;
-    float ny = clip.y / clip.w;
-    out = {
-        origin.x + (nx *  0.5f + 0.5f) * size.x,
-        origin.y + (0.5f - ny * 0.5f) * size.y,
-    };
-    return true;
+    if (!tabs_.empty()) mode_ = tabs_[0].mode;
 }
 
-void ViewportPanel::OpenSkeletonDialog()
+ViewportPanel::~ViewportPanel()
 {
-#if defined(_WIN32)
-    char buf[MAX_PATH] = {};
-    OPENFILENAMEA ofn  = {};
-    ofn.lStructSize    = sizeof(ofn);
-    ofn.lpstrFilter    = "Havok XML\0*.xml\0All Files\0*.*\0";
-    ofn.lpstrFile      = buf;
-    ofn.nMaxFile       = sizeof(buf);
-    ofn.Flags          = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    ofn.lpstrTitle     = "Open skeleton.xml";
-    if (!GetOpenFileNameA(&ofn)) return;
-
-    Skeleton sk;
-    if (LoadHavokSkeletonXml(buf, sk, m_loadErr, sizeof(m_loadErr))) {
-        m_skeleton = std::move(sk);
-        m_loadErr[0] = '\0';
-        FrameSkeleton();
-    }
-#endif
+    for (auto& ar : actorCache_)
+        for (MeshHandle h : ar.meshHandles)
+            renderer_.FreeMesh(h);
 }
 
-void ViewportPanel::FrameSkeleton()
-{
-    // Find AABB of world positions and frame the camera around it
-    if (m_skeleton.empty()) return;
-    glm::vec3 mn = m_skeleton.worldPos[0];
-    glm::vec3 mx = m_skeleton.worldPos[0];
-    for (auto& p : m_skeleton.worldPos) {
-        mn = glm::min(mn, p);
-        mx = glm::max(mx, p);
-    }
-    glm::vec3 center = (mn + mx) * 0.5f;
-    float     extent = glm::length(mx - mn) * 0.5f;
+// ── IPanel::Draw ──────────────────────────────────────────────────────────────
 
-    m_camera.target    = center;
-    m_camera.radius    = extent * 2.5f;
-    m_camera.azimuth   = 30.0f;
-    m_camera.elevation = 10.0f;
-}
-
-void ViewportPanel::Draw()
+void ViewportPanel::Draw(AppState& state)
 {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    bool open = ImGui::Begin("Viewport");
+    bool open = ImGui::Begin(PanelID());
     ImGui::PopStyleVar();
     if (!open) { ImGui::End(); return; }
 
     // ── Toolbar ───────────────────────────────────────────────────────────────
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
-    if (ImGui::Button("Load Skeleton XML..."))
-        OpenSkeletonDialog();
-    if (m_loadErr[0]) {
-        ImGui::SameLine();
-        ImGui::TextColored({1.0f, 0.4f, 0.4f, 1.0f}, "%s", m_loadErr);
-    } else if (!m_skeleton.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%d bones", static_cast<int>(m_skeleton.bones.size()));
+
+    if (!state.actors.empty()) {
+        ImGui::TextDisabled("%d actor(s)  |  %d bones",
+                            (int)state.actors.size(),
+                            state.skeletons.empty() ? 0 : (int)state.skeletons[0].bones.size());
+    } else {
+        ImGui::TextDisabled("No actors — add one from Actor Properties");
     }
+
+    // ── Viewport tab bar ──────────────────────────────────────────────────────
+    if (tabs_.size() > 1) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.f, 3.f));
+        if (ImGui::BeginTabBar("##vp_tabs", ImGuiTabBarFlags_None)) {
+            for (int i = 0; i < (int)tabs_.size(); i++) {
+                const bool active = (i == activeTabIdx_);
+                ImGuiTabItemFlags flags = active ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem(tabs_[i].label, nullptr, flags)) {
+                    activeTabIdx_ = i;
+                    mode_         = tabs_[i].mode;
+                    ImGui::EndTabItem();
+                }
+            }
+            ImGui::EndTabBar();
+        }
+        ImGui::PopStyleVar();
+    }
+
     ImGui::Separator();
 
-    // ── 3D viewport ───────────────────────────────────────────────────────────
-    const ImVec2 p0   = ImGui::GetCursorScreenPos();
+    // ── 3D viewport area ──────────────────────────────────────────────────────
     const ImVec2 size = ImGui::GetContentRegionAvail();
+    if (size.x < 1.f || size.y < 1.f) { ImGui::End(); return; }
 
-    ImGui::InvisibleButton("##vp", size,
-        ImGuiButtonFlags_MouseButtonLeft  |
-        ImGuiButtonFlags_MouseButtonRight |
-        ImGuiButtonFlags_MouseButtonMiddle);
+    // Update actor cache if actors/skeletons changed.
+    const int ac = (int)state.actors.size();
+    const int sc = (int)state.skeletons.size();
+    if (ac != cachedActorCount_ || sc != cachedSkeletonCount_)
+        RebuildActorCache(state);
 
+    // Re-upload NIF geometry if any actor's nifPath changed.
+    SyncNifHandles(state);
+
+    // Evaluate all actor poses for this frame.
+    EvaluatePoses(state);
+
+    // Render scene to FBO.
+    const int iw = (int)size.x;
+    const int ih = (int)size.y;
+    const glm::mat4 proj = camera_.Proj(size.x / size.y);
+    const glm::mat4 view = camera_.View();
+
+    renderer_.BeginFrame(iw, ih);
+    renderer_.SetCamera(view, proj);
+
+    if (mode_ == ViewportMode::Scene) {
+        float unit = 1.f;
+        if (camera_.radius > 100.f)      unit = 50.f;
+        else if (camera_.radius > 20.f)  unit = 10.f;
+        renderer_.DrawGrid(unit, 10);
+
+        // NIF space (Z-up, Y-forward) → world Y-up.
+        // -90° around X: NIF-Z(up) → world-Y, NIF-Y(forward) → world-(-Z).
+        static const glm::mat4 kNifToWorld =
+            glm::rotate(glm::mat4(1.f), glm::radians(-90.f), glm::vec3(1.f, 0.f, 0.f));
+
+        for (int ai = 0; ai < (int)actorCache_.size(); ai++) {
+            // Static NIF meshes — apply per-mesh toRoot then coordinate conversion.
+            const auto& cache = actorCache_[ai];
+            for (int mi = 0; mi < (int)cache.meshHandles.size(); mi++) {
+                const glm::mat4 model = kNifToWorld * cache.meshTransforms[mi];
+                renderer_.DrawMesh(cache.meshHandles[mi], model, { .wireframe = true });
+            }
+
+            // Skeleton overlay
+            const Pose& pose = actorCache_[ai].pose;
+            if (pose.empty()) continue;
+            const Skeleton* skel = state.SkeletonForActor(ai);
+            if (!skel) continue;
+            renderer_.DrawSkeleton(*skel, pose);
+        }
+    }
+
+    renderer_.EndFrame();
+
+    // Display the FBO colour texture (UV-flipped: OpenGL Y=0 is at bottom).
+    ImGui::Image(renderer_.GetOutputTexture(), size,
+                 ImVec2(0.f, 1.f), ImVec2(1.f, 0.f));
+
+    // Camera input on the image widget.
     if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
         ImGuiIO& io = ImGui::GetIO();
-        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 1.0f)) {
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 1.f)) {
             if (io.KeyShift)
-                m_camera.Pan(io.MouseDelta.x, -io.MouseDelta.y);
+                camera_.Pan(io.MouseDelta.x, -io.MouseDelta.y);
             else
-                m_camera.Orbit(-io.MouseDelta.x * 0.5f, io.MouseDelta.y * 0.5f);
+                camera_.Orbit(-io.MouseDelta.x * 0.5f, io.MouseDelta.y * 0.5f);
         }
-        if (io.MouseWheel != 0.0f)
-            m_camera.Zoom(io.MouseWheel);
+        if (io.MouseWheel != 0.f)
+            camera_.Zoom(io.MouseWheel);
     }
 
-    if (size.x < 1.0f || size.y < 1.0f) { ImGui::End(); return; }
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->PushClipRect(p0, {p0.x + size.x, p0.y + size.y}, true);
-
-    dl->AddRectFilled(p0, {p0.x + size.x, p0.y + size.y}, IM_COL32(28, 33, 51, 255));
-
-    const glm::mat4 vp = m_camera.Proj(size.x / size.y) * m_camera.View();
-
-    auto proj = [&](glm::vec3 w, ImVec2& out) {
-        return Project(vp, w, p0, size, out);
-    };
-
-    // ── Grid (scales with camera radius so it stays readable) ─────────────────
-    {
-        float unit  = 1.0f;
-        if (m_camera.radius > 100.f) unit = 50.f;
-        else if (m_camera.radius > 20.f) unit = 10.f;
-        constexpr int kHalf = 10;
-        const ImU32 kGrid = IM_COL32(90, 90, 115, 255);
-        for (int i = -kHalf; i <= kHalf; ++i) {
-            if (i == 0) continue;
-            const float f = static_cast<float>(i) * unit;
-            const float e = static_cast<float>(kHalf) * unit;
-            ImVec2 a, b;
-            if (proj({f, 0.f, -e}, a) && proj({f, 0.f, e}, b)) dl->AddLine(a, b, kGrid);
-            if (proj({-e, 0.f, f}, a) && proj({e, 0.f, f}, b)) dl->AddLine(a, b, kGrid);
-        }
-        ImVec2 a, b;
-        if (proj({-10.f * unit, 0.f, 0.f}, a) && proj({10.f * unit, 0.f, 0.f}, b))
-            dl->AddLine(a, b, IM_COL32(210, 55, 55, 255), 2.f);
-        if (proj({0.f, 0.f, -10.f * unit}, a) && proj({0.f, 0.f, 10.f * unit}, b))
-            dl->AddLine(a, b, IM_COL32(55, 110, 210, 255), 2.f);
+    // Scaffolded mode overlays (drawn on top via window DrawList).
+    if (mode_ != ViewportMode::Scene) {
+        const char* label = "Coming Soon";
+        if      (mode_ == ViewportMode::Face)    label = "Face View  —  coming soon";
+        else if (mode_ == ViewportMode::Cameras)  label = "Camera Preview  —  coming soon";
+        else if (mode_ == ViewportMode::Bones)    label = "Bone Editor  —  coming soon";
+        const ImVec2 p0 = ImGui::GetItemRectMin();
+        ImVec2 ts = ImGui::CalcTextSize(label);
+        ImGui::GetWindowDrawList()->AddText(
+            { p0.x + (size.x - ts.x) * 0.5f, p0.y + (size.y - ts.y) * 0.5f },
+            IM_COL32(180, 180, 200, 120), label);
     }
 
-    // ── Skeleton ──────────────────────────────────────────────────────────────
-    if (!m_skeleton.empty()) {
-        constexpr ImU32 kBone  = IM_COL32(220, 200,  80, 230);
-        constexpr ImU32 kJoint = IM_COL32(255, 255, 255, 200);
-
-        const int n = static_cast<int>(m_skeleton.bones.size());
-
-        // Bone sticks
-        for (int i = 0; i < n; i++) {
-            int p = m_skeleton.bones[i].parent;
-            if (p < 0) continue;
-            ImVec2 a, b;
-            if (proj(m_skeleton.worldPos[i], a) &&
-                proj(m_skeleton.worldPos[p], b))
-                dl->AddLine(a, b, kBone, 1.5f);
-        }
-
-        // Joint dots
-        for (int i = 0; i < n; i++) {
-            ImVec2 s;
-            if (proj(m_skeleton.worldPos[i], s))
-                dl->AddCircleFilled(s, 2.5f, kJoint);
-        }
-    }
-
-    dl->PopClipRect();
     ImGui::End();
+}
+
+// ── Internals ─────────────────────────────────────────────────────────────────
+
+void ViewportPanel::RebuildActorCache(AppState& state)
+{
+    // Free all GPU meshes before resizing — SyncNifHandles will re-upload.
+    for (auto& ar : actorCache_) {
+        for (MeshHandle h : ar.meshHandles)
+            renderer_.FreeMesh(h);
+        ar.meshHandles.clear();
+        ar.meshTransforms.clear();
+        ar.loadedNifPath.clear();
+    }
+
+    const int n = (int)state.actors.size();
+    actorCache_.resize(n);
+    for (int ai = 0; ai < n; ai++) {
+        actorCache_[ai].refPose = {};
+        actorCache_[ai].pose    = {};
+        const Skeleton* skel = state.SkeletonForActor(ai);
+        if (!skel) continue;
+        actorCache_[ai].refPose = skel->MakeReferencePose();
+        actorCache_[ai].pose    = actorCache_[ai].refPose;
+        actorCache_[ai].pose.SolveFK();
+    }
+    cachedActorCount_    = n;
+    cachedSkeletonCount_ = (int)state.skeletons.size();
+
+    FrameAll();
+}
+
+void ViewportPanel::SyncNifHandles(AppState& state)
+{
+    for (int ai = 0; ai < (int)actorCache_.size(); ai++) {
+        const Actor& actor = state.actors[ai];
+        const CastEntry* ce = (actor.castIndex >= 0 &&
+                               actor.castIndex < (int)state.cast.size())
+                            ? &state.cast[actor.castIndex] : nullptr;
+        const std::string& nifPath = ce ? ce->nifPath : "";
+
+        if (nifPath == actorCache_[ai].loadedNifPath) continue;
+
+        for (MeshHandle h : actorCache_[ai].meshHandles)
+            renderer_.FreeMesh(h);
+        actorCache_[ai].meshHandles.clear();
+        actorCache_[ai].meshTransforms.clear();
+        actorCache_[ai].loadedNifPath = nifPath;
+
+        if (!nifPath.empty()) {
+            NifDocument doc = LoadNifDocument(nifPath);
+            for (int si = 0; si < (int)doc.shapes.size(); si++) {
+                const NifDocShape& ds    = doc.shapes[si];
+                const NifBlock&    block = doc.blocks[ds.blockIndex];
+                MeshHandle h = renderer_.UploadMesh(ds.meshData);
+                actorCache_[ai].meshHandles.push_back(h);
+                actorCache_[ai].meshTransforms.push_back(block.toRoot);
+            }
+        }
+    }
+}
+
+void ViewportPanel::EvaluatePoses(AppState& state)
+{
+    if (actorCache_.empty()) return;
+
+    if (!state.sequence.Empty()) {
+        std::vector<ActorEval> evals;
+        state.sequence.Evaluate(state.time, state, evals);
+        for (int ai = 0; ai < (int)actorCache_.size() && ai < (int)evals.size(); ai++) {
+            actorCache_[ai].pose = evals[ai].pose;
+            actorCache_[ai].pose.SolveFK();
+        }
+    } else if (state.selectedClip >= 0 && state.selectedClip < (int)state.clips.size()) {
+        for (int ai = 0; ai < (int)actorCache_.size(); ai++) {
+            actorCache_[ai].pose = actorCache_[ai].refPose;
+            state.clips[state.selectedClip].Evaluate(state.time, actorCache_[ai].pose);
+            actorCache_[ai].pose.SolveFK();
+        }
+    } else {
+        for (auto& ar : actorCache_) {
+            ar.pose = ar.refPose;
+            ar.pose.SolveFK();
+        }
+    }
+}
+
+void ViewportPanel::FrameAll()
+{
+    glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
+    bool any = false;
+    for (const auto& ar : actorCache_) {
+        if (ar.refPose.empty()) continue;
+        for (const auto& wp : ar.refPose.worldPos) {
+            mn = glm::min(mn, wp);
+            mx = glm::max(mx, wp);
+            any = true;
+        }
+    }
+    if (!any) return;
+    camera_.target    = (mn + mx) * 0.5f;
+    camera_.radius    = glm::length(mx - mn) * 1.3f;
+    camera_.azimuth   = 210.f;
+    camera_.elevation = 10.f;
+    fprintf(stderr, "[Viewport] FrameAll: mn=(%.2f,%.2f,%.2f) mx=(%.2f,%.2f,%.2f) radius=%.2f\n",
+            mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, camera_.radius);
 }

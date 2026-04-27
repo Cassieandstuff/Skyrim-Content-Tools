@@ -61,6 +61,7 @@ typedef struct __GLsync *GLsync;
 #define GL_COLOR_BUFFER_BIT               0x00004000
 
 /* primitives */
+#define GL_POINTS                         0x0000
 #define GL_LINES                          0x0001
 #define GL_TRIANGLES                      0x0004
 #define GL_TRIANGLE_STRIP                 0x0005
@@ -72,6 +73,11 @@ typedef struct __GLsync *GLsync;
 #define GL_INVALID_OPERATION              0x0502
 #define GL_OUT_OF_MEMORY                  0x0505
 
+/* polygon mode */
+#define GL_FRONT_AND_BACK                 0x0408
+#define GL_LINE                           0x1B01
+#define GL_FILL                           0x1B02
+
 /* depth/blend */
 #define GL_DEPTH_TEST                     0x0B71
 #define GL_LEQUAL                         0x0203
@@ -80,11 +86,15 @@ typedef struct __GLsync *GLsync;
 #define GL_SRC_ALPHA                      0x0302
 #define GL_ONE_MINUS_SRC_ALPHA            0x0303
 
+/* data types */
+#define GL_UNSIGNED_SHORT                 0x1403
+
 /* texture */
 #define GL_TEXTURE_2D                     0x0DE1
 #define GL_RGBA                           0x1908
 #define GL_RGBA8                          0x8058
 #define GL_RGB                            0x1907
+#define GL_BGRA                           0x80E1
 #define GL_UNSIGNED_BYTE                  0x1401
 #define GL_FLOAT                          0x1406
 #define GL_TEXTURE_MAG_FILTER             0x2800
@@ -93,7 +103,10 @@ typedef struct __GLsync *GLsync;
 #define GL_TEXTURE_WRAP_T                 0x2803
 #define GL_LINEAR                         0x2601
 #define GL_NEAREST                        0x2600
+#define GL_LINEAR_MIPMAP_LINEAR           0x2703
 #define GL_CLAMP_TO_EDGE                  0x812F
+#define GL_REPEAT                         0x2901
+#define GL_TEXTURE_MAX_LEVEL              0x813D
 #define GL_TEXTURE0                       0x84C0
 
 /* framebuffer */
@@ -102,9 +115,11 @@ typedef struct __GLsync *GLsync;
 #define GL_READ_FRAMEBUFFER               0x8CA8
 #define GL_COLOR_ATTACHMENT0              0x8CE0
 #define GL_DEPTH_ATTACHMENT               0x8D00
+#define GL_DEPTH_STENCIL_ATTACHMENT       0x821A
 #define GL_RENDERBUFFER                   0x8D41
 #define GL_FRAMEBUFFER_COMPLETE           0x8CD5
 #define GL_DEPTH_COMPONENT24              0x81A6
+#define GL_DEPTH24_STENCIL8               0x88F0
 #define GL_DRAW_FRAMEBUFFER_BINDING       0x8CA6
 
 /* shader */
@@ -116,8 +131,14 @@ typedef struct __GLsync *GLsync;
 
 /* buffer */
 #define GL_ARRAY_BUFFER                   0x8892
+#define GL_ELEMENT_ARRAY_BUFFER           0x8893
+#define GL_SHADER_STORAGE_BUFFER          0x90D2
 #define GL_STATIC_DRAW                    0x88B4
 #define GL_DYNAMIC_DRAW                   0x88E8
+#define GL_STREAM_DRAW                    0x88E0
+
+/* point rendering */
+#define GL_PROGRAM_POINT_SIZE             0x8642
 
 /* get */
 #define GL_VIEWPORT                       0x0BA2
@@ -140,6 +161,7 @@ typedef void   (APIENTRYP PFNGLGENTEXTURESPROC)(GLsizei n, GLuint* textures);
 typedef void   (APIENTRYP PFNGLDELETETEXTURESPROC)(GLsizei n, const GLuint* textures);
 typedef void   (APIENTRYP PFNGLBINDTEXTUREPROC)(GLenum target, GLuint texture);
 typedef void   (APIENTRYP PFNGLTEXIMAGE2DPROC)(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid* pixels);
+typedef void   (APIENTRYP PFNGLCOMPRESSEDTEXIMAGE2DPROC)(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid* data);
 typedef void   (APIENTRYP PFNGLTEXPARAMETERIPROC)(GLenum target, GLenum pname, GLint param);
 typedef void   (APIENTRYP PFNGLACTIVETEXTUREPROC)(GLenum texture);
 
@@ -153,6 +175,18 @@ typedef void   (APIENTRYP PFNGLDELETEVERTEXARRAYSPROC)(GLsizei n, const GLuint* 
 typedef void   (APIENTRYP PFNGLBINDVERTEXARRAYPROC)(GLuint array);
 typedef void   (APIENTRYP PFNGLENABLEVERTEXATTRIBARRAYPROC)(GLuint index);
 typedef void   (APIENTRYP PFNGLVERTEXATTRIBPOINTERPROC)(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid* pointer);
+
+/* index / element drawing */
+typedef void   (APIENTRYP PFNGLDRAWELEMENTSPROC)(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices);
+
+/* integer vertex attrib */
+typedef void   (APIENTRYP PFNGLVERTEXATTRIBIPOINTERPROC)(GLuint index, GLint size, GLenum type, GLsizei stride, const GLvoid* pointer);
+
+/* polygon rasterization */
+typedef void   (APIENTRYP PFNGLPOLYGONMODEPROC)(GLenum face, GLenum mode);
+
+/* SSBO / buffer base */
+typedef void   (APIENTRYP PFNGLBINDBUFFERBASEPROC)(GLenum target, GLuint index, GLuint buffer);
 
 /* shaders */
 typedef GLuint (APIENTRYP PFNGLCREATESHADERPROC)(GLenum type);
@@ -171,6 +205,7 @@ typedef void   (APIENTRYP PFNGLGETPROGRAMINFOLOGPROC)(GLuint program, GLsizei bu
 typedef GLint  (APIENTRYP PFNGLGETUNIFORMLOCATIONPROC)(GLuint program, const GLchar* name);
 typedef void   (APIENTRYP PFNGLUNIFORM4FPROC)(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3);
 typedef void   (APIENTRYP PFNGLUNIFORM4FVPROC)(GLint location, GLsizei count, const GLfloat* value);
+typedef void   (APIENTRYP PFNGLUNIFORM1IPROC)(GLint location, GLint v0);
 typedef void   (APIENTRYP PFNGLUNIFORMMATRIX4FVPROC)(GLint location, GLsizei count, GLboolean transpose, const GLfloat* value);
 typedef GLboolean (APIENTRYP PFNGLISENABLED)(GLenum cap);
 
@@ -202,6 +237,7 @@ extern PFNGLGENTEXTURESPROC             glad_glGenTextures;
 extern PFNGLDELETETEXTURESPROC          glad_glDeleteTextures;
 extern PFNGLBINDTEXTUREPROC             glad_glBindTexture;
 extern PFNGLTEXIMAGE2DPROC              glad_glTexImage2D;
+extern PFNGLCOMPRESSEDTEXIMAGE2DPROC    glad_glCompressedTexImage2D;
 extern PFNGLTEXPARAMETERIPROC           glad_glTexParameteri;
 extern PFNGLACTIVETEXTUREPROC           glad_glActiveTexture;
 extern PFNGLGENBUFFERSPROC              glad_glGenBuffers;
@@ -213,6 +249,10 @@ extern PFNGLDELETEVERTEXARRAYSPROC      glad_glDeleteVertexArrays;
 extern PFNGLBINDVERTEXARRAYPROC         glad_glBindVertexArray;
 extern PFNGLENABLEVERTEXATTRIBARRAYPROC glad_glEnableVertexAttribArray;
 extern PFNGLVERTEXATTRIBPOINTERPROC     glad_glVertexAttribPointer;
+extern PFNGLVERTEXATTRIBIPOINTERPROC    glad_glVertexAttribIPointer;
+extern PFNGLDRAWELEMENTSPROC            glad_glDrawElements;
+extern PFNGLPOLYGONMODEPROC             glad_glPolygonMode;
+extern PFNGLBINDBUFFERBASEPROC          glad_glBindBufferBase;
 extern PFNGLCREATESHADERPROC            glad_glCreateShader;
 extern PFNGLDELETESHADERPROC            glad_glDeleteShader;
 extern PFNGLSHADERSOURCEPROC            glad_glShaderSource;
@@ -227,6 +267,7 @@ extern PFNGLUSEPROGRAMPROC              glad_glUseProgram;
 extern PFNGLGETPROGRAMIVPROC            glad_glGetProgramiv;
 extern PFNGLGETPROGRAMINFOLOGPROC       glad_glGetProgramInfoLog;
 extern PFNGLGETUNIFORMLOCATIONPROC      glad_glGetUniformLocation;
+extern PFNGLUNIFORM1IPROC               glad_glUniform1i;
 extern PFNGLUNIFORM4FPROC               glad_glUniform4f;
 extern PFNGLUNIFORM4FVPROC              glad_glUniform4fv;
 extern PFNGLUNIFORMMATRIX4FVPROC        glad_glUniformMatrix4fv;
@@ -258,6 +299,7 @@ extern PFNGLRENDERBUFFERSTORAGEPROC     glad_glRenderbufferStorage;
 #define glDeleteTextures          glad_glDeleteTextures
 #define glBindTexture             glad_glBindTexture
 #define glTexImage2D              glad_glTexImage2D
+#define glCompressedTexImage2D    glad_glCompressedTexImage2D
 #define glTexParameteri           glad_glTexParameteri
 #define glActiveTexture           glad_glActiveTexture
 #define glGenBuffers              glad_glGenBuffers
@@ -269,6 +311,10 @@ extern PFNGLRENDERBUFFERSTORAGEPROC     glad_glRenderbufferStorage;
 #define glBindVertexArray         glad_glBindVertexArray
 #define glEnableVertexAttribArray glad_glEnableVertexAttribArray
 #define glVertexAttribPointer     glad_glVertexAttribPointer
+#define glVertexAttribIPointer    glad_glVertexAttribIPointer
+#define glDrawElements            glad_glDrawElements
+#define glPolygonMode             glad_glPolygonMode
+#define glBindBufferBase          glad_glBindBufferBase
 #define glCreateShader            glad_glCreateShader
 #define glDeleteShader            glad_glDeleteShader
 #define glShaderSource            glad_glShaderSource
@@ -283,6 +329,7 @@ extern PFNGLRENDERBUFFERSTORAGEPROC     glad_glRenderbufferStorage;
 #define glGetProgramiv            glad_glGetProgramiv
 #define glGetProgramInfoLog       glad_glGetProgramInfoLog
 #define glGetUniformLocation      glad_glGetUniformLocation
+#define glUniform1i               glad_glUniform1i
 #define glUniform4f               glad_glUniform4f
 #define glUniform4fv              glad_glUniform4fv
 #define glUniformMatrix4fv        glad_glUniformMatrix4fv
