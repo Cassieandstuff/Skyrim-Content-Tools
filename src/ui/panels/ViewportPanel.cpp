@@ -41,6 +41,79 @@ ViewportPanel::~ViewportPanel()
     FreeCellCache();
 }
 
+// ── Ray-AABB picking ──────────────────────────────────────────────────────────
+
+int ViewportPanel::PickCellRef(float ndcX, float ndcY, float aspect) const
+{
+    if (cellInstances_.empty()) return -1;
+
+    const glm::mat4 VP    = camera_.Proj(aspect) * camera_.View();
+    const glm::mat4 invVP = glm::inverse(VP);
+    const glm::vec4 far4  = invVP * glm::vec4(ndcX, ndcY, 1.f, 1.f);
+    const glm::vec3 rayO  = camera_.Eye();
+    const glm::vec3 rayD  = glm::normalize(glm::vec3(far4) / far4.w - rayO);
+
+    float bestT  = FLT_MAX;
+    int   bestRef = -1;
+
+    for (const auto& inst : cellInstances_) {
+        auto it = cellMeshCatalog_.find(inst.baseFormKey);
+        if (it == cellMeshCatalog_.end()) continue;
+
+        for (const auto& shape : it->second.shapes) {
+            if (shape.mesh == MeshHandle::Invalid) continue;
+            if (shape.localMin == shape.localMax) continue;  // degenerate
+
+            // Transform local AABB corners to world space → world AABB.
+            const glm::mat4 M = inst.placement * shape.toRoot;
+            glm::vec3 wMin( FLT_MAX), wMax(-FLT_MAX);
+            for (int cx = 0; cx < 2; ++cx)
+            for (int cy = 0; cy < 2; ++cy)
+            for (int cz = 0; cz < 2; ++cz) {
+                const glm::vec3 c = {
+                    cx ? shape.localMax.x : shape.localMin.x,
+                    cy ? shape.localMax.y : shape.localMin.y,
+                    cz ? shape.localMax.z : shape.localMin.z
+                };
+                const glm::vec4 w = M * glm::vec4(c, 1.f);
+                const glm::vec3 wv = glm::vec3(w) / w.w;
+                wMin = glm::min(wMin, wv);
+                wMax = glm::max(wMax, wv);
+            }
+
+            // Slab ray-AABB test.
+            // tMin starts at -FLT_MAX (unclamped) so camera-inside AABBs
+            // produce a negative tMin rather than clamping to 0 and winning.
+            float tMin = -FLT_MAX, tMax = FLT_MAX;
+            bool  hit  = true;
+            for (int a = 0; a < 3; ++a) {
+                const float d  = (&rayD.x)[a];
+                const float o  = (&rayO.x)[a];
+                const float lo = (&wMin.x)[a];
+                const float hi = (&wMax.x)[a];
+                if (fabsf(d) < 1e-8f) {
+                    if (o < lo || o > hi) { hit = false; break; }
+                } else {
+                    float t1 = (lo - o) / d, t2 = (hi - o) / d;
+                    if (t1 > t2) std::swap(t1, t2);
+                    tMin = std::max(tMin, t1);
+                    tMax = std::min(tMax, t2);
+                    if (tMin > tMax) { hit = false; break; }
+                }
+            }
+            // Camera inside AABB: tMin < 0, tMax > 0.  Use tMax as the sort
+            // depth so large surrounding objects (FX glows, fill lights) lose
+            // to foreground objects the ray hits from outside.
+            const float hitT = (tMin >= 0.f) ? tMin : tMax;
+            if (hit && hitT >= 0.f && hitT < bestT) {
+                bestT   = hitT;
+                bestRef = inst.refIndex;
+            }
+        }
+    }
+    return bestRef;
+}
+
 // ── IPanel::Draw ──────────────────────────────────────────────────────────────
 
 void ViewportPanel::Draw(AppState& state)
@@ -126,13 +199,18 @@ void ViewportPanel::Draw(AppState& state)
         for (const auto& inst : cellInstances_) {
             auto it = cellMeshCatalog_.find(inst.baseFormKey);
             if (it == cellMeshCatalog_.end()) continue;
+            const bool selected = (inst.refIndex == state.selectedCellRefIndex);
             for (const auto& shape : it->second.shapes) {
                 if (shape.mesh == MeshHandle::Invalid) continue;
                 DrawSurface surf;
                 surf.diffuse = shape.texture;
-                surf.tint    = (shape.texture != TextureHandle::Invalid)
-                    ? glm::vec4(1.f, 1.f, 1.f, 1.f)
-                    : glm::vec4(0.70f, 0.70f, 0.75f, 1.f);
+                if (selected) {
+                    surf.tint = glm::vec4(1.f, 0.65f, 0.1f, 1.f);  // orange highlight
+                } else {
+                    surf.tint = (shape.texture != TextureHandle::Invalid)
+                        ? glm::vec4(1.f, 1.f, 1.f, 1.f)
+                        : glm::vec4(0.70f, 0.70f, 0.75f, 1.f);
+                }
                 renderer_.DrawMesh(shape.mesh, inst.placement * shape.toRoot, surf);
             }
         }
@@ -190,7 +268,7 @@ void ViewportPanel::Draw(AppState& state)
     ImGui::Image(renderer_.GetOutputTexture(), size,
                  ImVec2(0.f, 1.f), ImVec2(1.f, 0.f));
 
-    // Camera input on the image widget.
+    // Camera input + left-click picking on the image widget.
     if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
         ImGuiIO& io = ImGui::GetIO();
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 1.f)) {
@@ -201,6 +279,14 @@ void ViewportPanel::Draw(AppState& state)
         }
         if (io.MouseWheel != 0.f)
             camera_.Zoom(io.MouseWheel);
+
+        // Left-click with no drag → pick cell reference.
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+            !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.f)) {
+            const float ndcX = 2.f * (io.MousePos.x - imgMin.x) / size.x - 1.f;
+            const float ndcY = 1.f - 2.f * (io.MousePos.y - imgMin.y) / size.y;
+            state.selectedCellRefIndex = PickCellRef(ndcX, ndcY, size.x / size.y);
+        }
     }
 
     // ── Viewport overlays (drawn via window DrawList over the image) ─────────
@@ -498,7 +584,8 @@ void ViewportPanel::SyncCellMeshes(AppState& state)
     // NOTE: This is synchronous and will block for several seconds on large
     // cells (e.g. Whiterun).  Async streaming is a future improvement.
 
-    for (const auto& ref : state.loadedCell.refs) {
+    for (int ri = 0; ri < (int)state.loadedCell.refs.size(); ++ri) {
+        const auto& ref = state.loadedCell.refs[ri];
 
         // ── Mesh catalog: one NIF upload per unique base object ───────────────
         if (cellMeshCatalog_.find(ref.baseFormKey) == cellMeshCatalog_.end()) {
@@ -525,7 +612,36 @@ void ViewportPanel::SyncCellMeshes(AppState& state)
 
                 CellShapeEntry se;
                 se.toRoot = block.toRoot;
-                se.mesh   = renderer_.UploadMesh(ds.meshData);
+
+                // Local-space AABB for ray picking.
+                if (!ds.meshData.positions.empty()) {
+                    glm::vec3 lo( FLT_MAX), hi(-FLT_MAX);
+                    for (const auto& p : ds.meshData.positions) {
+                        lo = glm::min(lo, p);
+                        hi = glm::max(hi, p);
+                    }
+                    se.localMin = lo;
+                    se.localMax = hi;
+                }
+
+                se.mesh = renderer_.UploadMesh(ds.meshData);
+
+                // DEBUG: print full toRoot matrix for floor-cap + furniture
+                // pieces to see if toRoot has any rotation component.
+                if (ref.nifPath.find("FloorCap") != std::string::npos ||
+                    ref.nifPath.find("Furniture") != std::string::npos ||
+                    ref.nifPath.find("Alchemy")   != std::string::npos) {
+                    // GLM column-major: [col][row]. Print rotation columns 0,1,2.
+                    fprintf(stderr,
+                        "[ToRootFull] %-55s  shape=%-25s\n"
+                        "             col0=(%+.3f,%+.3f,%+.3f)  col1=(%+.3f,%+.3f,%+.3f)"
+                        "  col2=(%+.3f,%+.3f,%+.3f)  tr=(%+.1f,%+.1f,%+.1f)\n",
+                        ref.nifPath.c_str(), block.name.c_str(),
+                        block.toRoot[0][0], block.toRoot[0][1], block.toRoot[0][2],
+                        block.toRoot[1][0], block.toRoot[1][1], block.toRoot[1][2],
+                        block.toRoot[2][0], block.toRoot[2][1], block.toRoot[2][2],
+                        block.toRoot[3][0], block.toRoot[3][1], block.toRoot[3][2]);
+                }
 
                 if (!ds.diffusePath.empty()) {
                     std::vector<uint8_t> texBytes;
@@ -562,13 +678,15 @@ void ViewportPanel::SyncCellMeshes(AppState& state)
                                             glm::vec3(ref.posX, ref.posY, ref.posZ));
         const glm::mat4 TRS = T * (Rx * Ry * Rz) * S;
 
-        // DEBUG: dump rotation data for any ref with non-trivial rotX or rotY.
-        if (fabsf(ref.rotX) > 0.05f || fabsf(ref.rotY) > 0.05f) {
-            fprintf(stderr, "[CellRot] nif=%-60s  rotX=%+.3f  rotY=%+.3f  rotZ=%+.3f\n",
-                    ref.nifPath.c_str(), ref.rotX, ref.rotY, ref.rotZ);
+        // DEBUG: log refs with non-zero rotX/rotY to catch compound rotations.
+        if (fabsf(ref.rotX) > 0.01f || fabsf(ref.rotY) > 0.01f) {
+            fprintf(stderr, "[CellRot] nif=%-60s  pos=(%+8.1f,%+8.1f,%+8.1f)  rot=(%+.3f,%+.3f,%+.3f)\n",
+                    ref.nifPath.c_str(),
+                    ref.posX, ref.posY, ref.posZ,
+                    ref.rotX, ref.rotY, ref.rotZ);
         }
 
-        cellInstances_.push_back({ ref.baseFormKey, kNifToWorld * TRS });
+        cellInstances_.push_back({ ref.baseFormKey, kNifToWorld * TRS, ri });
     }
 
     const int uniqueBases = (int)cellMeshCatalog_.size();

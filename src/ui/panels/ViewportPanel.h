@@ -69,9 +69,11 @@ private:
     // ── Cell render cache ─────────────────────────────────────────────────────
     // One GPU shape from a base-object NIF (STAT/MSTT/FURN/etc.).
     struct CellShapeEntry {
-        MeshHandle    mesh    = MeshHandle::Invalid;
-        TextureHandle texture = TextureHandle::Invalid;
-        glm::mat4     toRoot  = glm::mat4(1.f);  // shape → NIF-root transform
+        MeshHandle    mesh     = MeshHandle::Invalid;
+        TextureHandle texture  = TextureHandle::Invalid;
+        glm::mat4     toRoot   = glm::mat4(1.f);   // shape → NIF-root transform
+        glm::vec3     localMin = glm::vec3(0.f);   // local-space AABB for picking
+        glm::vec3     localMax = glm::vec3(0.f);
     };
 
     // All shapes belonging to one unique base object, keyed by baseFormKey.
@@ -85,6 +87,7 @@ private:
     struct CellInstance {
         std::string baseFormKey;
         glm::mat4   placement = glm::mat4(1.f);
+        int         refIndex  = -1;  // index into loadedCell.refs
     };
 
     struct ActorRenderData {
@@ -116,4 +119,6 @@ private:
     void SyncMorphs(AppState& state);      // applies ARKit blend-shape weights to face meshes
     void EvaluatePoses(AppState& state);
     void FrameAll();
+    // Ray-cast picking: returns index into loadedCell.refs, or -1.
+    int  PickCellRef(float ndcX, float ndcY, float aspect) const;
 };

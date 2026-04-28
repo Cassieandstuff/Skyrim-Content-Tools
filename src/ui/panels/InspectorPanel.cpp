@@ -22,7 +22,10 @@ void InspectorPanel::Draw(AppState& state)
 {
     ImGui::Begin(PanelID());
 
-    if (state.selectedCast >= 0 && state.selectedCast < (int)state.cast.size())
+    if (state.selectedCellRefIndex >= 0 &&
+        state.selectedCellRefIndex < (int)state.loadedCell.refs.size())
+        DrawCellRefProperties(state, state.selectedCellRefIndex);
+    else if (state.selectedCast >= 0 && state.selectedCast < (int)state.cast.size())
         DrawActorProperties(state, state.selectedCast);
     else
         DrawSceneProperties(state);
@@ -490,5 +493,76 @@ void InspectorPanel::DrawFaceMorphsSection(AppState& state, int castIdx)
             doc.morphWeights.clear();
             state.projectDirty = true;
         }
+    }
+}
+
+// ── Cell Reference Properties ─────────────────────────────────────────────────
+
+void InspectorPanel::DrawCellRefProperties(const AppState& state, int refIndex)
+{
+    const CellPlacedRef& ref = state.loadedCell.refs[refIndex];
+
+    ImGui::SeparatorText("Cell Object");
+
+    // NIF filename (tooltip = full path)
+    std::string nifFilename = std::filesystem::path(ref.nifPath).filename().string();
+    ImGui::TextDisabled("NIF:");
+    ImGui::SameLine();
+    ImGui::TextUnformatted(nifFilename.c_str());
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", ref.nifPath.c_str());
+
+    ImGui::Spacing();
+
+    // Form keys
+    constexpr ImGuiTableFlags kTblFlags =
+        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoHostExtendX;
+    if (ImGui::BeginTable("##cr_keys", 2, kTblFlags)) {
+        ImGui::TableSetupColumn("##lbl", ImGuiTableColumnFlags_WidthFixed,   58.f);
+        ImGui::TableSetupColumn("##val", ImGuiTableColumnFlags_WidthStretch);
+
+        auto Row = [](const char* label, const char* value) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextDisabled("%s", label);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(value);
+        };
+
+        Row("REFR:",  ref.refFormKey.empty()  ? "-" : ref.refFormKey.c_str());
+        Row("Base:",  ref.baseFormKey.empty() ? "-" : ref.baseFormKey.c_str());
+        ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Transform");
+
+    if (ImGui::BeginTable("##cr_xform", 2, kTblFlags)) {
+        ImGui::TableSetupColumn("##xl", ImGuiTableColumnFlags_WidthFixed,   46.f);
+        ImGui::TableSetupColumn("##xv", ImGuiTableColumnFlags_WidthStretch);
+
+        auto XRow = [](const char* label, float a, float b, float c) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextDisabled("%s", label);
+            ImGui::TableSetColumnIndex(1);
+            char valBuf[96];
+            std::snprintf(valBuf, sizeof(valBuf), "%.1f,  %.1f,  %.1f", a, b, c);
+            ImGui::TextUnformatted(valBuf);
+        };
+
+        constexpr float kR2D = 57.2957795f;
+        XRow("Pos:",  ref.posX, ref.posY, ref.posZ);
+        XRow("Rot°:", ref.rotX * kR2D, ref.rotY * kR2D, ref.rotZ * kR2D);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextDisabled("Scale:");
+        ImGui::TableSetColumnIndex(1);
+        char scaleBuf[32];
+        std::snprintf(scaleBuf, sizeof(scaleBuf), "%.4f", ref.scale);
+        ImGui::TextUnformatted(scaleBuf);
+
+        ImGui::EndTable();
     }
 }

@@ -104,8 +104,9 @@ struct AppState {
 
     // ── UI state ────────────────────────────────────────────────────────────────────
     AppTab activeTab    = AppTab::SceneEditor;
-    int    selectedClip = -1;           // highlighted clip in the bin
-    int    selectedCast = -1;           // selected cast entry (-1 = none)
+    int    selectedClip         = -1;  // highlighted clip in the bin
+    int    selectedCast         = -1;  // selected cast entry (-1 = none)
+    int    selectedCellRefIndex = -1;  // selected cell placed-ref (-1 = none)
 
     // ── Data folder ──────────────────────────────────────────────────────────────────
     std::string                   dataFolder;           // path to the game's Data directory

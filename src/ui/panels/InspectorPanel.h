@@ -20,6 +20,7 @@ private:
     void DrawMeshesSection(AppState& state, int castIdx);
     void DrawFaceMorphsSection(AppState& state, int castIdx);
     void DrawSkeletonPickerModal(AppState& state, int castIdx);
+    void DrawCellRefProperties(const AppState& state, int refIndex);
 
     // Identity edit buffers — reloaded when selection changes
     int  lastSelected_     = -2;
