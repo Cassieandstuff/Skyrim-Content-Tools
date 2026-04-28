@@ -1,6 +1,7 @@
 #include "TrackRegistry.h"
 #include "AppState.h"
 #include "AnimClip.h"
+#include "FaceClip.h"
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
@@ -99,15 +100,27 @@ void RegisterAllTrackTypes()
         reg.Register(std::move(def));
     }
 
-    // ── FaceData — facial animation / morphs (scaffolded) ──────────────────────
+    // ── FaceData — facial animation / morphs ─────────────────────────────────
     {
         TrackTypeDef def;
         def.id           = TrackType::FaceData;
         def.label        = "Face Data";
         def.color        = ImVec4(0.55f, 0.30f, 0.65f, 1.0f);
         def.isSceneLevel = false;
-        def.isCompatible = nullptr;   // restrict to humanoid when feature ships
-        def.evaluate     = nullptr;   // no-op until face system is implemented
+        def.isCompatible = nullptr;
+
+        def.evaluate = [](const TrackLane& lane, float t,
+                          AppState& state, ActorEval& eval)
+        {
+            for (const auto& item : lane.items) {
+                if (!item.ActiveAt(t)) continue;
+                if (item.assetIndex < 0 || item.assetIndex >= (int)state.faceClips.size())
+                    continue;
+                const float localT = t - item.seqStart + item.trimIn;
+                state.faceClips[item.assetIndex].EvaluateAll(localT, eval.morphWeights);
+            }
+        };
+
         reg.Register(std::move(def));
     }
 

@@ -1,8 +1,9 @@
 #pragma once
 #include "Pose.h"
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
-#include <functional>
 
 // Forward declaration — full definition in AppState.h.
 struct AppState;
@@ -59,8 +60,8 @@ struct ActorTrackGroup {
 // Output of Sequence::Evaluate for one actor at a given time.
 // Written by the TrackRegistry evaluate functions, read by the viewport renderer.
 struct ActorEval {
-    Pose pose;
-    // Future fields: morphWeights, lookAtTarget, etc.
+    Pose                         pose;
+    std::map<std::string, float> morphWeights;  // ARKit blend shape weights from FaceData track
 };
 
 // ── Sequence ──────────────────────────────────────────────────────────────────

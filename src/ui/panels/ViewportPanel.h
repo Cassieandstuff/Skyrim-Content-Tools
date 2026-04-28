@@ -66,6 +66,27 @@ private:
         int                    vertexCount = 0;
     };
 
+    // ── Cell render cache ─────────────────────────────────────────────────────
+    // One GPU shape from a base-object NIF (STAT/MSTT/FURN/etc.).
+    struct CellShapeEntry {
+        MeshHandle    mesh    = MeshHandle::Invalid;
+        TextureHandle texture = TextureHandle::Invalid;
+        glm::mat4     toRoot  = glm::mat4(1.f);  // shape → NIF-root transform
+    };
+
+    // All shapes belonging to one unique base object, keyed by baseFormKey.
+    struct CellCatalogEntry {
+        std::vector<CellShapeEntry> shapes;
+    };
+
+    // One placed reference: catalog lookup key + pre-baked world transform.
+    // placement = kNifToWorld * T * R * S  (kNifToWorld already applied).
+    // Draw call: DrawMesh(shape.mesh, inst.placement * shape.toRoot, surf)
+    struct CellInstance {
+        std::string baseFormKey;
+        glm::mat4   placement = glm::mat4(1.f);
+    };
+
     struct ActorRenderData {
         Pose                          refPose;
         Pose                          pose;
@@ -75,15 +96,23 @@ private:
         std::vector<MeshSkinBinding>  meshSkinBindings; // per-mesh skin binding, parallel to meshHandles
         std::vector<MeshMorphBase>    meshMorphBases;   // base positions for morph blending
         std::map<std::string, float>  morphWeightsCached; // last-applied weights (dirty check)
+        std::map<std::string, float>  morphWeightsEval;   // weights from FaceData timeline track
         std::string                   loadedNifPath;    // path these handles came from
     };
     std::vector<ActorRenderData> actorCache_;
     int cachedActorCount_   = -1;  // invalidation sentinel
     int cachedSkeletonCount_ = -1;
 
+    // Cell environment render cache — rebuilt when state.loadedCell.formKey changes.
+    std::string                             cellLoadedKey_;
+    std::map<std::string, CellCatalogEntry> cellMeshCatalog_; // baseFormKey → shapes
+    std::vector<CellInstance>               cellInstances_;
+
     // ── Internals ─────────────────────────────────────────────────────────────
     void RebuildActorCache(AppState& state);
     void SyncNifHandles(AppState& state);  // re-uploads if nifPath changed
+    void SyncCellMeshes(AppState& state);  // rebuild cell GPU cache when loadedCell changes
+    void FreeCellCache();                   // free all cell GPU resources
     void SyncMorphs(AppState& state);      // applies ARKit blend-shape weights to face meshes
     void EvaluatePoses(AppState& state);
     void FrameAll();

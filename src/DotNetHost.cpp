@@ -59,6 +59,8 @@ using ProjectNewFn      = int  (*)(const char* modName);
 using ProjectLoadFn     = int  (*)(const char* path);
 using ProjectSaveFn     = int  (*)(const char* path);
 using NpcCreateFn       = int  (*)(const char* inJson, char** outJson, int* outLen);
+using CellSearchFn      = int  (*)(const char* query, int maxResults, char** outJson, int* outLen);
+using CellGetRefsFn     = int  (*)(const char* formKey, char** outJson, int* outLen);
 
 // ── Module-level state ────────────────────────────────────────────────────────
 
@@ -77,6 +79,8 @@ static ProjectNewFn   s_projectNew      = nullptr;
 static ProjectLoadFn  s_projectLoad     = nullptr;
 static ProjectSaveFn  s_projectSave     = nullptr;
 static NpcCreateFn    s_pluginNpcCreate = nullptr;
+static CellSearchFn   s_cellSearch      = nullptr;
+static CellGetRefsFn  s_cellGetRefs     = nullptr;
 static LastErrorFn    s_pluginLastError = nullptr;
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
@@ -259,6 +263,10 @@ bool DotNetHost::Init(char* errOut, int errLen)
     // Absence does not affect s_pluginReady; the wrapper returns -1 if null.
     loadPlugin(L"LoadOrderLoad", reinterpret_cast<void**>(&s_loadOrderLoad));
 
+    // Optional — cell browsing support (added with previs work).
+    loadPlugin(L"CellSearch",   reinterpret_cast<void**>(&s_cellSearch));
+    loadPlugin(L"CellGetRefs",  reinterpret_cast<void**>(&s_cellGetRefs));
+
     return true;
 }
 
@@ -405,6 +413,52 @@ bool DotNetHost::NpcCreate(const char* inJson, std::string& outJson,
     }
     char* buf = nullptr; int len = 0;
     if (s_pluginNpcCreate(inJson, &buf, &len) == 0) {
+        outJson.assign(buf, len);
+        FreeBuffer(buf);
+        return true;
+    }
+    if (s_pluginLastError && errOut && errLen > 0) s_pluginLastError(errOut, errLen);
+    return false;
+}
+
+bool DotNetHost::CellSearch(const char* query, int maxResults,
+                             std::string& outJson,
+                             char* errOut, int errLen)
+{
+    if (!s_pluginReady) {
+        std::snprintf(errOut, errLen, "plugin bridge not initialized");
+        return false;
+    }
+    if (!s_cellSearch) {
+        std::snprintf(errOut, errLen,
+            "CellSearch not available — rebuild SctBridge");
+        return false;
+    }
+    char* buf = nullptr; int len = 0;
+    if (s_cellSearch(query, maxResults, &buf, &len) == 0) {
+        outJson.assign(buf, len);
+        FreeBuffer(buf);
+        return true;
+    }
+    if (s_pluginLastError && errOut && errLen > 0) s_pluginLastError(errOut, errLen);
+    return false;
+}
+
+bool DotNetHost::CellGetRefs(const char* formKey,
+                              std::string& outJson,
+                              char* errOut, int errLen)
+{
+    if (!s_pluginReady) {
+        std::snprintf(errOut, errLen, "plugin bridge not initialized");
+        return false;
+    }
+    if (!s_cellGetRefs) {
+        std::snprintf(errOut, errLen,
+            "CellGetRefs not available — rebuild SctBridge");
+        return false;
+    }
+    char* buf = nullptr; int len = 0;
+    if (s_cellGetRefs(formKey, &buf, &len) == 0) {
         outJson.assign(buf, len);
         FreeBuffer(buf);
         return true;

@@ -145,6 +145,28 @@ Sequence
 - `float32 baseDiff` — scale: finalDelta = int16_delta × baseDiff
 - `vertexNum × int16[3]` — signed per-vertex deltas (dx, dy, dz)
 
+### Face Animation (FaceClip)
+
+HKX body animation files can carry face morph keyframes as Havok annotation track entries. SCT extracts these into `FaceClip` objects (stored in `AppState::faceClips[]`) separately from the body `AnimClip`.
+
+**Annotation text format** (one entry per morph per keyframe):
+```
+MorphFace.<system>|<morphName>|<intWeight>
+```
+- `<system>` — face capture system name, e.g. `RokokofaceUBE` (matched by prefix `MorphFace`, rest is informational)
+- `<morphName>` — ARKit blend shape name, e.g. `mouthFunnel`, `jawOpen`, `eyeBlinkLeft`
+- `<intWeight>` — integer 0–100 representing normalized weight 0.0–1.0
+
+Multiple morphs at the same timestamp = multiple annotation entries sharing that timestamp. Weight divisor is `kWeightScale = 100.f` in `FaceClip.cpp`.
+
+**`FaceClip` data structure** (`src/FaceClip.h/cpp`):
+- `channels[]` — one `FaceMorphChannel` per unique ARKit morph found, each with sorted `times[]` + `weights[]` arrays
+- `Evaluate(morphName, t)` — linear interpolation for a single morph
+- `EvaluateAll(t, outWeights)` — fills all non-zero morphs at time t
+- `ParseFromXml(xmlData, xmlLen, name, ...)` — parses Havok packfile XML (output of `HkxToXml`)
+
+**Auto-extraction**: `AppState::LoadClipFromPath` piggybacks face clip extraction on the same HkxToXml buffer that produces the body AnimClip. If face annotations are found (`channels.empty() == false`), the FaceClip is appended to `faceClips[]` at no extra cost.
+
 ---
 
 ## Key UI Implementation Rules
@@ -164,6 +186,8 @@ if (loopWas) ImGui::PopStyleColor();
 **Axis gizmo math**: `glm::mat4 view = camera_.View()` is column-major. `view[col][row]`. World axis X maps to screen as `(view[0][0], -view[0][1])`, Y as `(view[1][0], -view[1][1])`, Z as `(view[2][0], -view[2][1])`.
 
 **Coordinate system contract**: World space is Y-up, Z-forward (character faces +Z). `Pose::SolveFK` maps Havok bone positions as `worldPos = (x, z_havok, y_havok)` (YZ-swap, since Havok is Z-up/Y-forward). `kNifToWorld` in **ViewportPanel** uses the same YZ-swap permutation matrix (col-major: col1=(0,0,1,0), col2=(0,1,0,0)) so NIF meshes face the same direction as the skeleton. The NIF editor (`NifEditorState`) uses a different `-90° around X` rotation since it displays NIFs without a skeleton reference.
+
+**Cell REFR Euler order**: Skyrim/Havok uses **extrinsic ZYX** (yaw applied first in world space, then pitch, then roll). As a column-vector matrix product: `R = Rx(rotX) * Ry(rotY) * Rz(rotZ)`. For objects with only `rotZ ≠ 0` (most floor furniture), both orderings are identical. The difference only appears for compound rotations (wall mounts, ceiling fixtures, tilted props). The cell placement transform is `kNifToWorld * T * Rx * Ry * Rz * S` with positions swapped `(posX, posY, posZ)` in Skyrim space — kNifToWorld converts the whole to world Y-up.
 
 **DockBuilder layout** (`SetupDefaultLayout`): Scene Editor top(65%) = Bin|SceneGraph|Viewport; bottom(35%) = Timeline|Inspector. Workflow = Plugin Browser fills full space.
 

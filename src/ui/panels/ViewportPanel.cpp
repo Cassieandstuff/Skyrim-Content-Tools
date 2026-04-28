@@ -10,6 +10,17 @@
 #include <cfloat>
 #include <cstdio>
 
+// ── Coordinate conversion ─────────────────────────────────────────────────────
+// NIF / Havok space is Z-up, Y-forward.  SCT world space is Y-up, Z-forward.
+// Column-major: col1 = NIF-Y→world-Z, col2 = NIF-Z→world-Y.
+// Used by both actor NIF rendering and cell placed-object rendering.
+static const glm::mat4 kNifToWorld = glm::mat4(
+    glm::vec4(1, 0, 0, 0),   // NIF X  → world X
+    glm::vec4(0, 0, 1, 0),   // NIF Y (forward) → world Z
+    glm::vec4(0, 1, 0, 0),   // NIF Z (up)      → world Y
+    glm::vec4(0, 0, 0, 1)
+);
+
 // ── Construction ──────────────────────────────────────────────────────────────
 
 ViewportPanel::ViewportPanel(std::vector<ViewportTabDef> tabs, ISceneRenderer& renderer,
@@ -27,6 +38,7 @@ ViewportPanel::~ViewportPanel()
         for (MeshHandle    h : ar.meshHandles)    renderer_.FreeMesh(h);
         for (TextureHandle t : ar.textureHandles) renderer_.FreeTexture(t);
     }
+    FreeCellCache();
 }
 
 // ── IPanel::Draw ──────────────────────────────────────────────────────────────
@@ -84,11 +96,14 @@ void ViewportPanel::Draw(AppState& state)
     // Re-upload NIF geometry if any actor's nifPath changed.
     SyncNifHandles(state);
 
+    // Rebuild cell GPU cache if the loaded cell changed.
+    SyncCellMeshes(state);
+
+    // Evaluate all actor poses for this frame (also fills morphWeightsEval from FaceData track).
+    EvaluatePoses(state);
+
     // Apply ARKit blend-shape weights to face mesh positions when weights change.
     SyncMorphs(state);
-
-    // Evaluate all actor poses for this frame.
-    EvaluatePoses(state);
 
     // Render scene to FBO.
     const int iw = (int)size.x;
@@ -105,16 +120,22 @@ void ViewportPanel::Draw(AppState& state)
         else if (camera_.radius > 20.f)  unit = 10.f;
         renderer_.DrawGrid(unit, 10);
 
-        // NIF (Z-up, Y-forward) → world (Y-up, Z-forward).
-        // Must match Pose::SolveFK's axis swap: worldPos = (havok_x, havok_z, havok_y).
-        // Both NIF and Havok use Z-up / Y-forward; SolveFK maps forward(+Y)→worldZ(+Z).
-        // Column-major: col0=nifX→worldX, col1=nifY→worldZ, col2=nifZ→worldY.
-        static const glm::mat4 kNifToWorld = glm::mat4(
-            glm::vec4(1, 0, 0, 0),   // NIF X  → world X
-            glm::vec4(0, 0, 1, 0),   // NIF Y (forward) → world Z
-            glm::vec4(0, 1, 0, 0),   // NIF Z (up)      → world Y
-            glm::vec4(0, 0, 0, 1)
-        );
+        // kNifToWorld defined at file scope above — converts NIF/Havok Z-up to Y-up world.
+
+        // ── Cell environment ──────────────────────────────────────────────────
+        for (const auto& inst : cellInstances_) {
+            auto it = cellMeshCatalog_.find(inst.baseFormKey);
+            if (it == cellMeshCatalog_.end()) continue;
+            for (const auto& shape : it->second.shapes) {
+                if (shape.mesh == MeshHandle::Invalid) continue;
+                DrawSurface surf;
+                surf.diffuse = shape.texture;
+                surf.tint    = (shape.texture != TextureHandle::Invalid)
+                    ? glm::vec4(1.f, 1.f, 1.f, 1.f)
+                    : glm::vec4(0.70f, 0.70f, 0.75f, 1.f);
+                renderer_.DrawMesh(shape.mesh, inst.placement * shape.toRoot, surf);
+            }
+        }
 
         for (int ai = 0; ai < (int)actorCache_.size(); ai++) {
             const auto& cache = actorCache_[ai];
@@ -254,6 +275,7 @@ void ViewportPanel::RebuildActorCache(AppState& state)
         ar.meshSkinBindings.clear();
         ar.meshMorphBases.clear();
         ar.morphWeightsCached.clear();
+        ar.morphWeightsEval.clear();
         ar.loadedNifPath.clear();
     }
 
@@ -299,6 +321,7 @@ void ViewportPanel::SyncNifHandles(AppState& state)
         actorCache_[ai].meshSkinBindings.clear();
         actorCache_[ai].meshMorphBases.clear();
         actorCache_[ai].morphWeightsCached.clear(); // force SyncMorphs re-apply on reload
+        actorCache_[ai].morphWeightsEval.clear();
         actorCache_[ai].loadedNifPath = cacheKey;
 
         // Load one NIF and append its shapes into the actor's render cache.
@@ -399,9 +422,14 @@ void ViewportPanel::SyncMorphs(AppState& state)
         if (actor.castIndex < 0 || actor.castIndex >= (int)state.cast.size()) continue;
         ActorDocument& doc = state.cast[actor.castIndex];
 
+        // Timeline FaceData evaluation takes priority over authored inspector sliders.
+        const bool hasEval = !actorCache_[ai].morphWeightsEval.empty();
+        const std::map<std::string, float>& effective =
+            hasEval ? actorCache_[ai].morphWeightsEval : doc.morphWeights;
+
         // Dirty check — skip if weights unchanged since last apply.
-        if (doc.morphWeights == actorCache_[ai].morphWeightsCached) continue;
-        actorCache_[ai].morphWeightsCached = doc.morphWeights;
+        if (effective == actorCache_[ai].morphWeightsCached) continue;
+        actorCache_[ai].morphWeightsCached = effective;
 
         // triDocs are loaded lazily by InspectorPanel; skip if not yet loaded.
         if (doc.triDocs.empty()) continue;
@@ -423,8 +451,8 @@ void ViewportPanel::SyncMorphs(AppState& state)
             // Start from base and accumulate active morphs.
             std::vector<glm::vec3> morphed = base.positions;
             for (const TriMorph& m : tri->morphs) {
-                auto it = doc.morphWeights.find(m.name);
-                if (it == doc.morphWeights.end() || it->second == 0.f) continue;
+                auto it = effective.find(m.name);
+                if (it == effective.end() || it->second == 0.f) continue;
                 const float w = it->second;
                 const int   n = std::min((int)m.deltas.size(), base.vertexCount);
                 for (int v = 0; v < n; v++)
@@ -437,6 +465,122 @@ void ViewportPanel::SyncMorphs(AppState& state)
     }
 }
 
+void ViewportPanel::FreeCellCache()
+{
+    for (auto& [key, entry] : cellMeshCatalog_) {
+        for (auto& shape : entry.shapes) {
+            if (shape.mesh    != MeshHandle::Invalid)    renderer_.FreeMesh(shape.mesh);
+            if (shape.texture != TextureHandle::Invalid) renderer_.FreeTexture(shape.texture);
+        }
+    }
+    cellMeshCatalog_.clear();
+    cellInstances_.clear();
+    cellLoadedKey_.clear();
+}
+
+void ViewportPanel::SyncCellMeshes(AppState& state)
+{
+    // Compute the key representing the currently desired cell state.
+    const std::string newKey = state.loadedCell.loaded
+                             ? state.loadedCell.formKey
+                             : std::string{};
+
+    if (newKey == cellLoadedKey_) return;   // no change
+
+    FreeCellCache();                         // releases old GPU resources
+    cellLoadedKey_ = newKey;
+
+    if (state.loadedCell.Empty()) return;
+
+    fprintf(stderr, "[Cell] Building render cache for '%s' (%d refs)...\n",
+            state.loadedCell.name.c_str(), (int)state.loadedCell.refs.size());
+
+    // NOTE: This is synchronous and will block for several seconds on large
+    // cells (e.g. Whiterun).  Async streaming is a future improvement.
+
+    for (const auto& ref : state.loadedCell.refs) {
+
+        // ── Mesh catalog: one NIF upload per unique base object ───────────────
+        if (cellMeshCatalog_.find(ref.baseFormKey) == cellMeshCatalog_.end()) {
+            CellCatalogEntry entry;
+
+            NifDocument doc;
+            const bool isAbsolute =
+                (ref.nifPath.size() >= 2 && ref.nifPath[1] == ':') ||
+                (!ref.nifPath.empty() &&
+                 (ref.nifPath[0] == '/' || ref.nifPath[0] == '\\'));
+
+            if (isAbsolute) {
+                doc = LoadNifDocument(ref.nifPath);
+            } else {
+                std::vector<uint8_t> nifBytes;
+                if (state.ResolveAsset(ref.nifPath, nifBytes))
+                    doc = LoadNifDocumentFromBytes(nifBytes, ref.nifPath);
+            }
+
+            for (int si = 0; si < (int)doc.shapes.size(); si++) {
+                const NifDocShape& ds    = doc.shapes[si];
+                const NifBlock&    block = doc.blocks[ds.blockIndex];
+                if (ds.meshData.positions.empty()) continue;
+
+                CellShapeEntry se;
+                se.toRoot = block.toRoot;
+                se.mesh   = renderer_.UploadMesh(ds.meshData);
+
+                if (!ds.diffusePath.empty()) {
+                    std::vector<uint8_t> texBytes;
+                    if (state.ResolveAsset(ds.diffusePath, texBytes))
+                        se.texture = renderer_.LoadTextureFromMemory(texBytes);
+                }
+                entry.shapes.push_back(std::move(se));
+            }
+
+            // Always insert (even if empty) to avoid retrying a failed NIF.
+            cellMeshCatalog_[ref.baseFormKey] = std::move(entry);
+        }
+
+        // ── Instance: placement transform (Skyrim Z-up → Y-up world) ─────────
+        // Skyrim REFR uses extrinsic ZYX: rotZ (yaw around world Z-up) is applied
+        // first to the vertex, then rotY, then rotX last.  Column-vector matrix
+        // form: R = Rx * Ry * Rz  (rightmost applied first).
+        //
+        // Sign correction: kNifToWorld is a YZ-swap with det = -1.  Direct
+        // calculation shows kNifToWorld * Rz(θ) acts as Ry(-θ) in world space,
+        // kNifToWorld * Rx(θ) acts as Rx(-θ), and kNifToWorld * Ry(θ) acts as
+        // Rz(-θ).  We pre-negate rotZ and rotY to compensate; rotX is left
+        // positive because the double-negation via det=-1 cancels out.
+        //
+        // Order matters for compound rotations: Rx * Rz keeps the up-vector
+        // (Z-axis) independent of the yaw (Rz doesn't rotate Z), so tilt and
+        // yaw decouple correctly.  Rz * Rx couples them and "swings" tilted
+        // pieces sideways.
+        const glm::mat4 S  = glm::scale(glm::mat4(1.f), glm::vec3(ref.scale));
+        const glm::mat4 Rx = glm::rotate(glm::mat4(1.f),  ref.rotX, glm::vec3(1.f, 0.f, 0.f));
+        const glm::mat4 Ry = glm::rotate(glm::mat4(1.f), -ref.rotY, glm::vec3(0.f, 1.f, 0.f));
+        const glm::mat4 Rz = glm::rotate(glm::mat4(1.f), -ref.rotZ, glm::vec3(0.f, 0.f, 1.f));
+        const glm::mat4 T  = glm::translate(glm::mat4(1.f),
+                                            glm::vec3(ref.posX, ref.posY, ref.posZ));
+        const glm::mat4 TRS = T * (Rx * Ry * Rz) * S;
+
+        // DEBUG: dump rotation data for any ref with non-trivial rotX or rotY.
+        if (fabsf(ref.rotX) > 0.05f || fabsf(ref.rotY) > 0.05f) {
+            fprintf(stderr, "[CellRot] nif=%-60s  rotX=%+.3f  rotY=%+.3f  rotZ=%+.3f\n",
+                    ref.nifPath.c_str(), ref.rotX, ref.rotY, ref.rotZ);
+        }
+
+        cellInstances_.push_back({ ref.baseFormKey, kNifToWorld * TRS });
+    }
+
+    const int uniqueBases = (int)cellMeshCatalog_.size();
+    const int totalShapes = [&]{
+        int n = 0;
+        for (auto& [k, e] : cellMeshCatalog_) n += (int)e.shapes.size();
+        return n;
+    }();
+    fprintf(stderr, "[Cell] Done: %d unique bases, %d total shapes, %d instances\n",
+            uniqueBases, totalShapes, (int)cellInstances_.size());
+}
+
 void ViewportPanel::EvaluatePoses(AppState& state)
 {
     if (actorCache_.empty()) return;
@@ -444,20 +588,30 @@ void ViewportPanel::EvaluatePoses(AppState& state)
     if (!state.sequence.Empty()) {
         std::vector<ActorEval> evals;
         state.sequence.Evaluate(state.time, state, evals);
-        for (int ai = 0; ai < (int)actorCache_.size() && ai < (int)evals.size(); ai++) {
-            actorCache_[ai].pose = evals[ai].pose;
-            actorCache_[ai].pose.SolveFK();
+        for (int ai = 0; ai < (int)actorCache_.size(); ai++) {
+            if (ai < (int)evals.size()) {
+                actorCache_[ai].pose = evals[ai].pose;
+                actorCache_[ai].pose.SolveFK();
+                // Capture face morph weights from FaceData track evaluation.
+                actorCache_[ai].morphWeightsEval = std::move(evals[ai].morphWeights);
+            } else {
+                actorCache_[ai].pose = actorCache_[ai].refPose;
+                actorCache_[ai].pose.SolveFK();
+                actorCache_[ai].morphWeightsEval.clear();
+            }
         }
     } else if (state.selectedClip >= 0 && state.selectedClip < (int)state.clips.size()) {
         for (int ai = 0; ai < (int)actorCache_.size(); ai++) {
             actorCache_[ai].pose = actorCache_[ai].refPose;
             state.clips[state.selectedClip].Evaluate(state.time, actorCache_[ai].pose);
             actorCache_[ai].pose.SolveFK();
+            actorCache_[ai].morphWeightsEval.clear();  // no face track in clip-preview mode
         }
     } else {
         for (auto& ar : actorCache_) {
             ar.pose = ar.refPose;
             ar.pose.SolveFK();
+            ar.morphWeightsEval.clear();
         }
     }
 }

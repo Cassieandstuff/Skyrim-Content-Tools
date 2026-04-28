@@ -1,6 +1,7 @@
 #pragma once
 #include "ActorDocument.h"
 #include "AnimClip.h"
+#include "FaceClip.h"
 #include "HavokSkeleton.h"
 #include "IPluginBackend.h"
 #include "Sequence.h"
@@ -8,6 +9,32 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+// ── CellPlacedRef ─────────────────────────────────────────────────────────────
+// One placed object reference decoded from sct_cell_get_refs JSON output.
+// Position and rotation are in Skyrim/Havok Z-up space — the same space as
+// HKX skeleton data.  ViewportPanel applies kNifToWorld when building draw calls.
+struct CellPlacedRef {
+    std::string refFormKey;   // this REFR's FormKey (unique identifier)
+    std::string baseFormKey;  // base object FormKey — instancing key (same value = same NIF)
+    std::string nifPath;      // data-relative path, Meshes\ prefix guaranteed
+    float posX = 0.f, posY = 0.f, posZ = 0.f;  // world position (Skyrim units)
+    float rotX = 0.f, rotY = 0.f, rotZ = 0.f;  // Euler angles in radians (X then Y then Z)
+    float scale = 1.f;
+};
+
+// ── CellContext ────────────────────────────────────────────────────────────────
+// CPU-side description of the currently loaded cell background environment.
+// GPU resources (MeshHandle, TextureHandle) are owned by ViewportPanel, which
+// detects changes via formKey and rebuilds its cell render cache accordingly.
+struct CellContext {
+    std::string                name;    // display name or EditorID (for UI labels)
+    std::string                formKey; // "XXXXXXXX:Plugin.esm" — change-detection key
+    std::vector<CellPlacedRef> refs;    // all placed objects that have a resolved NIF
+    bool                       loaded = false;
+
+    bool Empty() const { return !loaded || refs.empty(); }
+};
 
 // ── Toast notifications ───────────────────────────────────────────────────────
 enum class ToastLevel { Info, Warning, Error };
@@ -58,8 +85,9 @@ struct Actor {
 struct AppState {
 
     // ── Asset pools (the "bins") ────────────────────────────────────────────────
-    std::vector<AnimClip>  clips;     // animation clip library (immutable once loaded)
-    std::vector<Skeleton>  skeletons; // loaded skeleton definitions (deduplicated)
+    std::vector<AnimClip>  clips;      // body animation clip library (immutable once loaded)
+    std::vector<FaceClip>  faceClips;  // face animation clip library (extracted from HKX annotations)
+    std::vector<Skeleton>  skeletons;  // loaded skeleton definitions (deduplicated)
 
     // ── Cast ─────────────────────────────────────────────────────────────────────
     std::vector<ActorDocument> cast;  // actor authoring documents
@@ -67,6 +95,7 @@ struct AppState {
     // ── Scene ─────────────────────────────────────────────────────────────────────
     std::vector<Actor>     actors;    // actor instances active in the scene
     Sequence               sequence;  // the NLE timeline document
+    CellContext            loadedCell; // background environment (may be empty)
 
     // ── Playback ───────────────────────────────────────────────────────────────────
     float  time    = 0.f;
@@ -118,9 +147,17 @@ struct AppState {
     // project metadata. Preserves dataFolder, discoveredSkeletons, pluginBackend.
     void NewProject();
 
-    // Load a single animation clip from a file path (HKX or XML).
+    // Load a single body animation clip from a file path (HKX or XML).
     // Sets sourcePath and skeletonType. Returns new clip index or -1 on failure.
+    // When the source is HKX, also automatically extracts any face annotations
+    // from the same file and appends to faceClips[] (silently ignored if none found).
     int LoadClipFromPath(const char* path, char* errOut, int errLen);
+
+    // Load face animation (morph annotations) from a HKX or XML file independently
+    // of body animation — useful when importing a face-only HKX or re-importing
+    // face data without reloading body transforms.
+    // Returns new faceClip index or -1 on failure.
+    int LoadFaceClipFromPath(const char* path, char* errOut, int errLen);
 
     // Scan dataFolder/meshes/actors/ for skeleton HKX files; fills discoveredSkeletons.
     // Also builds bsaSearchList from Skyrim.ini + plugin-associated BSAs.
@@ -159,6 +196,17 @@ struct AppState {
     // rebuild extendedTriPaths.  Does NOT overwrite name/editorId (caller keeps
     // the author-set values).  Sets projectDirty = true.
     void RelinkActorFromRecord(int castIdx, const NpcRecord& rec);
+
+    // Load an interior cell by FormKey string ("XXXXXXXX:Plugin.esm").
+    // Calls CellGetRefs through the bridge and populates loadedCell.
+    // cellName is shown in UI; pass nullptr to use formKey as the label.
+    // Returns true on success; errOut receives an error message on failure.
+    bool LoadCell(const char* formKey, const char* cellName,
+                  char* errOut, int errLen);
+
+    // Clear loadedCell. ViewportPanel detects the change on the next frame
+    // and frees associated GPU resources.
+    void UnloadCell();
 
     // Re-run the MFEE vanilla→extended mapping on an existing cast entry using
     // the current mfeeExtendedTris map (populated by ScanDataFolder).

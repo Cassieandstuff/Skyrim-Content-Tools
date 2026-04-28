@@ -1,5 +1,6 @@
 #include "ClipBinPanel.h"
 #include "AppState.h"
+#include "FaceClip.h"
 #include "Sequence.h"
 #include <imgui.h>
 #include <algorithm>
@@ -22,6 +23,10 @@ void BinPanel::Draw(AppState& state)
     if (ImGui::BeginTabBar("##bin_tabs")) {
         if (ImGui::BeginTabItem("Clips")) {
             DrawClipsTab(state);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Face")) {
+            DrawFaceClipsTab(state);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Cast")) {
@@ -160,6 +165,91 @@ void BinPanel::AddSelectedClipToTimeline(AppState& state)
 
     state.time    = placeAt;
     state.playing = false;
+}
+
+// ── Face Clips tab ────────────────────────────────────────────────────────────
+
+void BinPanel::DrawFaceClipsTab(AppState& state)
+{
+    ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.22f, 0.45f, 0.35f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.30f, 0.58f, 0.46f, 1.0f));
+
+    if (state.faceClips.empty()) {
+        ImGui::TextDisabled("No face clips imported.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Face clips are extracted automatically when you import a "
+                           "body animation HKX that contains MorphFace annotations. "
+                           "You can also import a face-only HKX below.");
+    }
+
+    for (int i = 0; i < (int)state.faceClips.size(); i++) {
+        const FaceClip& fc = state.faceClips[i];
+        bool selected = (selectedFaceClip_ == i);
+
+        if (ImGui::Selectable(fc.name.c_str(), selected)) {
+            selectedFaceClip_ = i;
+        }
+
+        if (ImGui::BeginDragDropSource()) {
+            ImGui::SetDragDropPayload("SCT_FACE_CLIP", &i, sizeof(int));
+            ImGui::Text("%.2fs  [%d ch]  \xe2\x80\x94  %s",
+                        fc.duration, (int)fc.channels.size(), fc.name.c_str());
+            ImGui::EndDragDropSource();
+        }
+
+        // Right-aligned metadata.
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 90.f);
+        ImGui::TextDisabled("%.2fs", fc.duration);
+        ImGui::SameLine();
+        ImGui::TextDisabled("[%d ch]", (int)fc.channels.size());
+
+        // Tooltip listing all morph channel names.
+        if (ImGui::IsItemHovered() && !fc.channels.empty()) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted("ARKit morph channels:");
+            for (const auto& ch : fc.channels) {
+                int n = (int)ch.times.size();
+                ImGui::Text("  %-28s  %d keys", ch.morphName.c_str(), n);
+            }
+            ImGui::EndTooltip();
+        }
+    }
+
+    ImGui::PopStyleColor(2);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    if (ImGui::Button("+ Import Face Clip", {-1.f, 0.f}))
+        OpenImportFaceDialog(state);
+}
+
+void BinPanel::OpenImportFaceDialog(AppState& state)
+{
+#if defined(_WIN32)
+    char buf[MAX_PATH] = {};
+    OPENFILENAMEA ofn  = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = "Havok Files\0*.hkx;*.xml\0Havok Binary\0*.hkx\0Havok XML\0*.xml\0All Files\0*.*\0";
+    ofn.lpstrFile   = buf;
+    ofn.nMaxFile    = sizeof(buf);
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrTitle  = "Import Face Animation";
+    if (!GetOpenFileNameA(&ofn)) return;
+
+    char errBuf[256] = {};
+    const int idx = state.LoadFaceClipFromPath(buf, errBuf, sizeof(errBuf));
+    if (idx >= 0) {
+        selectedFaceClip_  = idx;
+        state.projectDirty = true;
+        char msg[128];
+        std::snprintf(msg, sizeof(msg), "Face clip imported — %d morph channels",
+                      (int)state.faceClips[idx].channels.size());
+        state.PushToast(msg, ToastLevel::Info);
+    } else {
+        state.PushToast(errBuf[0] ? errBuf : "Face clip import failed", ToastLevel::Error);
+    }
+#endif
 }
 
 // ── Cast tab ──────────────────────────────────────────────────────────────────

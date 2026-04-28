@@ -2,6 +2,7 @@
 #include "AppState.h"
 #include "DotNetHost.h"
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 #include <cstdio>
 #include <cstring>
 
@@ -104,6 +105,10 @@ void PluginBrowserPanel::Draw(AppState& state)
         }
         if (ImGui::BeginTabItem("Create New")) {
             DrawCreateTab(state, idx);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Cells")) {
+            DrawCellsTab(state);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -298,5 +303,152 @@ void PluginBrowserPanel::DrawCreateTab(AppState& state, int idx)
     if (createErr_[0]) {
         ImGui::Spacing();
         ImGui::TextColored({1.f, 0.4f, 0.4f, 1.f}, "%s", createErr_);
+    }
+}
+
+// ── Cells tab ─────────────────────────────────────────────────────────────────
+
+void PluginBrowserPanel::DrawCellsTab(AppState& state)
+{
+    // ── Current cell status ───────────────────────────────────────────────────
+    ImGui::Spacing();
+    if (state.loadedCell.loaded) {
+        ImGui::TextDisabled("Loaded:");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(state.loadedCell.name.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d refs)", (int)state.loadedCell.refs.size());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Unload")) {
+            state.UnloadCell();
+            state.PushToast("Cell unloaded", ToastLevel::Info);
+        }
+    } else {
+        ImGui::TextDisabled("No cell loaded");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ── Cell search ───────────────────────────────────────────────────────────
+    ImGui::SetNextItemWidth(-55.f);
+    const bool hitEnter = ImGui::InputTextWithHint(
+        "##cell_srch", "Name or EditorID\xe2\x80\xa6",
+        cellSearchBuf_, sizeof(cellSearchBuf_),
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    const bool doSearch = hitEnter || ImGui::Button("Go##cell", {-1.f, 0.f});
+
+    if (doSearch) {
+        selectedCell_ = -1;
+        cellErr_[0]   = '\0';
+        cellResults_.clear();
+
+        std::string jsonStr;
+        if (DotNetHost::CellSearch(cellSearchBuf_, 200, jsonStr,
+                                   cellErr_, sizeof(cellErr_))) {
+            try {
+                using json = nlohmann::json;
+                for (const auto& j : json::parse(jsonStr)) {
+                    CellRecord r;
+                    r.formId      = j.value("formId",      0u);
+                    r.formKey     = j.value("formKey",     std::string{});
+                    r.editorId    = j.value("editorId",    std::string{});
+                    r.name        = j.value("name",        std::string{});
+                    r.pluginSource = j.value("pluginSource", std::string{});
+                    if (!r.formKey.empty())
+                        cellResults_.push_back(std::move(r));
+                }
+            } catch (const std::exception& e) {
+                std::snprintf(cellErr_, sizeof(cellErr_),
+                              "JSON parse error: %s", e.what());
+                cellResults_.clear();
+            }
+        }
+    }
+
+    if (cellErr_[0]) {
+        ImGui::TextColored({1.f, 0.4f, 0.4f, 1.f}, "%s", cellErr_);
+        ImGui::Spacing();
+    }
+
+    // ── Results list ──────────────────────────────────────────────────────────
+    const float listH = ImGui::GetContentRegionAvail().y - 28.f;
+    ImGui::BeginChild("##cell_results", {-1.f, listH > 40.f ? listH : 40.f}, true);
+
+    for (int i = 0; i < (int)cellResults_.size(); i++) {
+        const CellRecord& r = cellResults_[i];
+
+        // Show name if available, fall back to EditorID
+        const char* label = r.name.empty() ? r.editorId.c_str() : r.name.c_str();
+        char fullLabel[320];
+        std::snprintf(fullLabel, sizeof(fullLabel), "%s##cell%d", label, i);
+
+        bool sel = (selectedCell_ == i);
+        if (ImGui::Selectable(fullLabel, sel,
+                              ImGuiSelectableFlags_AllowDoubleClick)) {
+            selectedCell_ = i;
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                // Double-click → load immediately
+                cellErr_[0] = '\0';
+                const char* displayName = r.name.empty()
+                    ? r.editorId.c_str() : r.name.c_str();
+                if (!state.LoadCell(r.formKey.c_str(), displayName,
+                                    cellErr_, sizeof(cellErr_))) {
+                    // error shown below
+                } else {
+                    char msg[256];
+                    std::snprintf(msg, sizeof(msg),
+                        "Cell loaded — %d refs", (int)state.loadedCell.refs.size());
+                    state.PushToast(msg, ToastLevel::Info);
+                }
+            }
+        }
+
+        // Tooltip with metadata
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            if (!r.editorId.empty())    ImGui::TextDisabled("EditorID: %s", r.editorId.c_str());
+            if (!r.pluginSource.empty())ImGui::TextDisabled("Source:   %s", r.pluginSource.c_str());
+            ImGui::TextDisabled("FormKey:  %s", r.formKey.c_str());
+            ImGui::TextDisabled("Double-click to load");
+            ImGui::EndTooltip();
+        }
+
+        // Right-aligned plugin source label
+        if (!r.pluginSource.empty()) {
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x
+                            - ImGui::CalcTextSize(r.pluginSource.c_str()).x);
+            ImGui::TextDisabled("%s", r.pluginSource.c_str());
+        }
+    }
+
+    ImGui::EndChild();
+
+    // ── Load button ───────────────────────────────────────────────────────────
+    const bool canLoad = (selectedCell_ >= 0 &&
+                          selectedCell_ < (int)cellResults_.size());
+    if (!canLoad) ImGui::BeginDisabled();
+
+    if (ImGui::Button("Load Cell", {-1.f, 0.f}) && canLoad) {
+        cellErr_[0] = '\0';
+        const CellRecord& r = cellResults_[selectedCell_];
+        const char* displayName = r.name.empty()
+            ? r.editorId.c_str() : r.name.c_str();
+        if (state.LoadCell(r.formKey.c_str(), displayName,
+                           cellErr_, sizeof(cellErr_))) {
+            char msg[256];
+            std::snprintf(msg, sizeof(msg),
+                "Cell loaded — %d refs", (int)state.loadedCell.refs.size());
+            state.PushToast(msg, ToastLevel::Info);
+        }
+    }
+
+    if (!canLoad) ImGui::EndDisabled();
+
+    if (cellErr_[0]) {
+        ImGui::Spacing();
+        ImGui::TextColored({1.f, 0.4f, 0.4f, 1.f}, "%s", cellErr_);
     }
 }

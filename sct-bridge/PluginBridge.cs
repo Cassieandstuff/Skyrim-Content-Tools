@@ -228,6 +228,129 @@ public static class PluginBridge
         catch (Exception ex) { s_lastError = ex.Message; return -1; }
     }
 
+    // ── Cell search ──────────────────────────────────────────────────────────
+    //
+    // Searches interior cells across all loaded mods.  Uses mod.Cells (the
+    // top-level GRUP CELL block), which in Skyrim's binary format contains
+    // only interior cells; exterior cells live under GRUP WRLD and are
+    // not included here.
+    //
+    // query      — substring matched against EditorID and display name (empty = all)
+    // maxResults — cap on returned records; 0 → 200
+    // Returns 0 on success, -1 on failure.
+
+    [UnmanagedCallersOnly(EntryPoint = "sct_cell_search")]
+    public static unsafe int CellSearch(byte* queryUtf8, int maxResults,
+                                         byte** outJson, int* outLen)
+    {
+        *outJson = null;
+        *outLen  = 0;
+        try
+        {
+            if (s_loadedMods.Count == 0)
+                throw new InvalidOperationException("no plugin loaded — call sct_plugin_load first");
+
+            var query = Marshal.PtrToStringUTF8((IntPtr)queryUtf8) ?? "";
+            var cap   = maxResults > 0 ? maxResults : 200;
+
+            // Walk block → subblock → cell hierarchy for each mod (highest-priority first).
+            var records = s_loadedMods
+                .AsEnumerable()
+                .Reverse()
+                .SelectMany(m => m.Cells.Records
+                    .SelectMany(b => b.SubBlocks)
+                    .SelectMany(sb => sb.Cells))
+                .Where(c => MatchesCellQuery(c, query))
+                .Take(cap)
+                .Select(ToCellRecord)
+                .ToList();
+
+            return WriteJson(records, outJson, outLen);
+        }
+        catch (Exception ex) { s_lastError = ex.Message; return -1; }
+    }
+
+    // ── Cell get refs ─────────────────────────────────────────────────────────
+    //
+    // Returns all placed objects in an interior cell — the Temporary and
+    // Persistent reference lists.  Each entry includes the base object's NIF
+    // model path (resolved through the link cache) and its placement transform.
+    // Records whose base object cannot be resolved to a model are silently
+    // skipped (e.g. lights, markers, trigger volumes).
+    //
+    // The baseFormKey field is stable across identical placements of the same
+    // base object; callers should use it as the instancing key when building
+    // a mesh catalog (one GPU upload per unique baseFormKey).
+    //
+    // formKeyStr — FormKey string as produced by sct_cell_search ("XXXXXXXX:Plugin.esm")
+    // Returns 0 on success, -1 on failure.
+
+    [UnmanagedCallersOnly(EntryPoint = "sct_cell_get_refs")]
+    public static unsafe int CellGetRefs(byte* formKeyUtf8, byte** outJson, int* outLen)
+    {
+        *outJson = null;
+        *outLen  = 0;
+        try
+        {
+            if (s_loadedMods.Count == 0 || s_linkCache is null)
+                throw new InvalidOperationException("no plugin loaded");
+
+            var formKeyStr = Marshal.PtrToStringUTF8((IntPtr)formKeyUtf8)
+                             ?? throw new ArgumentException("null formKey");
+
+            if (!FormKey.TryFactory(formKeyStr, out var formKey))
+                throw new ArgumentException($"invalid form key: '{formKeyStr}'");
+
+            // Find cell — highest-priority mod wins (last match).
+            ICellGetter? cell = null;
+            foreach (var mod in s_loadedMods.AsEnumerable().Reverse())
+            {
+                cell = mod.Cells.Records
+                    .SelectMany(b => b.SubBlocks)
+                    .SelectMany(sb => sb.Cells)
+                    .FirstOrDefault(c => c.FormKey == formKey);
+                if (cell is not null) break;
+            }
+
+            if (cell is null)
+                throw new KeyNotFoundException($"cell {formKeyStr} not found");
+
+            // Concatenate temporary + persistent refs; only process placed objects.
+            var allRefs = (cell.Temporary   ?? Enumerable.Empty<IPlacedGetter>())
+                .Concat(cell.Persistent ?? Enumerable.Empty<IPlacedGetter>());
+
+            var refs = new List<CellRefRecord>();
+            foreach (var placed in allRefs)
+            {
+                if (placed is not IPlacedObjectGetter pObj) continue;
+
+                var placement = pObj.Placement;
+                if (placement is null) continue;
+
+                var (nifPath, baseEditorId) = ResolveBaseModelPath(pObj.Base.FormKey);
+                if (string.IsNullOrEmpty(nifPath)) continue;
+
+                refs.Add(new CellRefRecord
+                {
+                    RefFormKey   = pObj.FormKey.ToString(),
+                    BaseFormKey  = pObj.Base.FormKey.ToString(),
+                    BaseEditorId = baseEditorId,
+                    NifPath      = EnsureMeshesPrefix(nifPath),
+                    PosX  = placement.Position.X,
+                    PosY  = placement.Position.Y,
+                    PosZ  = placement.Position.Z,
+                    RotX  = placement.Rotation.X,
+                    RotY  = placement.Rotation.Y,
+                    RotZ  = placement.Rotation.Z,
+                    Scale = pObj.Scale ?? 1.0f,
+                });
+            }
+
+            return WriteJson(refs, outJson, outLen);
+        }
+        catch (Exception ex) { s_lastError = ex.Message; return -1; }
+    }
+
     // ── Project mod ───────────────────────────────────────────────────────────
 
     [UnmanagedCallersOnly(EntryPoint = "sct_project_new")]
@@ -323,6 +446,52 @@ public static class PluginBridge
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
+
+    private static bool MatchesCellQuery(ICellGetter cell, string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return true;
+        var q = query.Trim();
+        return cell.EditorID?.Contains(q, StringComparison.OrdinalIgnoreCase) == true
+            || cell.Name?.String?.Contains(q, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static CellRecord ToCellRecord(ICellGetter cell) => new()
+    {
+        FormId      = cell.FormKey.ID,
+        FormKey     = cell.FormKey.ToString(),
+        EditorId    = cell.EditorID,
+        Name        = cell.Name?.String,
+        PluginSource = cell.FormKey.ModKey.FileName,
+    };
+
+    /// <summary>
+    /// Resolves a placed-object base FormKey to its NIF model path and EditorID.
+    /// Tries the most common static types in frequency order; returns (null, null)
+    /// for record types that carry no geometry (lights, markers, etc.).
+    /// </summary>
+    private static (string? nifPath, string? editorId) ResolveBaseModelPath(FormKey baseFormKey)
+    {
+        if (s_linkCache is null) return (null, null);
+
+        if (s_linkCache.TryResolve<IStaticGetter>(baseFormKey, out var stat))
+            return (stat.Model?.File.GivenPath, stat.EditorID);
+        if (s_linkCache.TryResolve<IMoveableStaticGetter>(baseFormKey, out var mstat))
+            return (mstat.Model?.File.GivenPath, mstat.EditorID);
+        if (s_linkCache.TryResolve<IFurnitureGetter>(baseFormKey, out var furn))
+            return (furn.Model?.File.GivenPath, furn.EditorID);
+        if (s_linkCache.TryResolve<IContainerGetter>(baseFormKey, out var cont))
+            return (cont.Model?.File.GivenPath, cont.EditorID);
+        if (s_linkCache.TryResolve<IDoorGetter>(baseFormKey, out var door))
+            return (door.Model?.File.GivenPath, door.EditorID);
+        if (s_linkCache.TryResolve<ITreeGetter>(baseFormKey, out var tree))
+            return (tree.Model?.File.GivenPath, tree.EditorID);
+        if (s_linkCache.TryResolve<IFloraGetter>(baseFormKey, out var flora))
+            return (flora.Model?.File.GivenPath, flora.EditorID);
+        if (s_linkCache.TryResolve<IActivatorGetter>(baseFormKey, out var acti))
+            return (acti.Model?.File.GivenPath, acti.EditorID);
+
+        return (null, null);
+    }
 
     private static bool MatchesQuery(INpcGetter npc, string query)
     {
@@ -558,6 +727,39 @@ public static class PluginBridge
     }
 
     // ── DTOs ──────────────────────────────────────────────────────────────────
+
+    private record CellRecord
+    {
+        public uint    FormId       { get; init; }
+        public string? FormKey      { get; init; }   // "XXXXXXXX:Plugin.esm"
+        public string? EditorId     { get; init; }
+        public string? Name         { get; init; }   // in-game display name (FULL)
+        public string? PluginSource { get; init; }
+    }
+
+    /// <summary>
+    /// One placed reference from a cell's Temporary or Persistent ref list.
+    /// Position and rotation are in Skyrim Z-up space (identical to Havok space):
+    /// X = east, Y = north, Z = up.
+    /// Rotation components (RotX, RotY, RotZ) are Euler angles in radians.
+    /// Application order: extrinsic ZYX — yaw (Z) applied first in world space,
+    /// then pitch (Y), then roll (X).  Matrix form: R = Rx * Ry * Rz.
+    /// baseFormKey is the instancing key — identical values share the same base mesh.
+    /// </summary>
+    private record CellRefRecord
+    {
+        public string? RefFormKey   { get; init; }   // this REFR's FormKey
+        public string? BaseFormKey  { get; init; }   // base object FormKey (instancing key)
+        public string? BaseEditorId { get; init; }
+        public string? NifPath      { get; init; }   // Data-relative, Meshes\ prefix
+        public float   PosX         { get; init; }
+        public float   PosY         { get; init; }
+        public float   PosZ         { get; init; }
+        public float   RotX         { get; init; }   // radians
+        public float   RotY         { get; init; }
+        public float   RotZ         { get; init; }
+        public float   Scale        { get; init; } = 1.0f;
+    }
 
     private record BodyPartEntry
     {

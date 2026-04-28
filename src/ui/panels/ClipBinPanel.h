@@ -2,9 +2,10 @@
 #include "ui/IPanel.h"
 
 // ── BinPanel ──────────────────────────────────────────────────────────────────
-// Two-tab panel:
-//   Clips — animation clip library + import dialog + "Add to Timeline" action
-//   Cast  — character roster; click an entry to populate the Actor Properties panel
+// Three-tab panel:
+//   Clips — body animation clip library + import dialog + "Add to Timeline"
+//   Face  — face animation clip library (ARKit morph channels from HKX annotations)
+//   Cast  — character roster; click to populate Actor Properties panel
 class BinPanel : public IPanel {
 public:
     void        Draw(AppState& state) override;
@@ -14,6 +15,10 @@ public:
 private:
     void DrawClipsTab(AppState& state);
     void AddSelectedClipToTimeline(AppState& state);
+
+    void DrawFaceClipsTab(AppState& state);
+    void OpenImportFaceDialog(AppState& state);
+    int  selectedFaceClip_ = -1;
 
     void DrawCastTab(AppState& state);
 };

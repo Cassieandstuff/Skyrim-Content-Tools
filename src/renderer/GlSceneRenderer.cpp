@@ -469,9 +469,11 @@ void GlSceneRenderer::UpdateMeshPositions(MeshHandle handle,
     if (it == m_meshes.end()) return;
     const GpuMesh& gm = it->second;
     if (positions.empty() || (int)positions.size() != gm.vertexCount) return;
-    glNamedBufferSubData(gm.vboPos, 0,
-                         (GLsizeiptr)(positions.size() * sizeof(glm::vec3)),
-                         positions.data());
+    glBindBuffer(GL_ARRAY_BUFFER, gm.vboPos);
+    glBufferData(GL_ARRAY_BUFFER,
+                 (GLsizeiptr)(positions.size() * sizeof(glm::vec3)),
+                 positions.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 TextureHandle GlSceneRenderer::LoadTexture(const std::string& path)

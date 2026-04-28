@@ -1,5 +1,6 @@
 #include "TimelinePanel.h"
 #include "AppState.h"
+#include "FaceClip.h"
 #include "Sequence.h"
 #include "ui/TrackRegistry.h"
 #include <imgui.h>
@@ -59,13 +60,20 @@ void TimelinePanel::Draw(AppState& state)
     // items are drawn) so g.LastItemData still refers to ##tl_area.
     // We save the mouse position here and resolve the actor lane after
     // DrawTrackArea has built the lane geometry.
-    int    pendingDropClip = -1;
-    ImVec2 pendingDropPos  = {};
+    int    pendingDropClip     = -1;
+    ImVec2 pendingDropPos      = {};
+    int    pendingDropFaceClip = -1;
+    ImVec2 pendingDropFacePos  = {};
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* pay = ImGui::AcceptDragDropPayload("SCT_CLIP")) {
             IM_ASSERT(pay->DataSize == sizeof(int));
             pendingDropClip = *(const int*)pay->Data;
             pendingDropPos  = ImGui::GetIO().MousePos;
+        }
+        if (const ImGuiPayload* pay = ImGui::AcceptDragDropPayload("SCT_FACE_CLIP")) {
+            IM_ASSERT(pay->DataSize == sizeof(int));
+            pendingDropFaceClip = *(const int*)pay->Data;
+            pendingDropFacePos  = ImGui::GetIO().MousePos;
         }
         ImGui::EndDragDropTarget();
     }
@@ -91,6 +99,8 @@ void TimelinePanel::Draw(AppState& state)
     // Process any clip drop now that lane geometry is available.
     if (pendingDropClip >= 0)
         HandleDrop(state, pendingDropClip, pendingDropPos, trackX, trackW, lanes);
+    if (pendingDropFaceClip >= 0)
+        HandleFaceDrop(state, pendingDropFaceClip, pendingDropFacePos, trackX, trackW, lanes);
 
     // Input handling (after draw so we have lane geometry)
     HandleInput(state, trackX, trackW, areaY, areaH, rulerY, lanes);
@@ -314,9 +324,10 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
     const TrackTypeDef* def = TrackRegistry::Get().Find(lane->type);
     const char* laneLabel = def ? def->label : "?";
 
-    // Check for an active clip drag — drives visual feedback below.
-    const ImGuiPayload* dragPay    = ImGui::GetDragDropPayload();
-    const bool          isDragClip = (dragPay && dragPay->IsDataType("SCT_CLIP"));
+    // Check for an active drag — drives visual feedback below.
+    const ImGuiPayload* dragPay        = ImGui::GetDragDropPayload();
+    const bool          isDragClip     = (dragPay && dragPay->IsDataType("SCT_CLIP"));
+    const bool          isDragFaceClip = (dragPay && dragPay->IsDataType("SCT_FACE_CLIP"));
 
     // Record for hit testing
     lanesOut.push_back({ actorIdx, laneIdx, laneY, laneY + laneH });
@@ -326,10 +337,10 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
     dl->AddRectFilled({trackX - headerW_, laneY}, {trackX + trackW, laneY + laneH}, bgCol);
     dl->AddLine({trackX - headerW_, laneY + laneH}, {trackX + trackW, laneY + laneH}, kColSep);
 
-    // Drag-over highlight: blue = compatible, orange = wrong skeleton type, red = wrong lane type.
-    if (isDragClip && trackW > 0.f) {
-        const ImVec2 mouse = ImGui::GetIO().MousePos;
-        if (mouse.y >= laneY && mouse.y < laneY + laneH) {
+    // Drag-over highlight: blue/green = compatible, red = wrong lane type.
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    if (trackW > 0.f && mouse.y >= laneY && mouse.y < laneY + laneH) {
+        if (isDragClip) {
             if (lane->type == TrackType::AnimClip) {
                 // Resolve skeleton types (value copies — strings are short).
                 const int dci = *(const int*)dragPay->Data;
@@ -349,7 +360,6 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
                     dl->AddRect      ({trackX, laneY + 1}, {trackX + trackW, laneY + laneH - 1},
                                       IM_COL32(100, 180, 255, 110), 0.f, 0, 1.5f);
                 } else {
-                    // Wrong skeleton type — orange warning
                     dl->AddRectFilled({trackX, laneY + 1}, {trackX + trackW, laneY + laneH - 1},
                                       IM_COL32(200, 130, 40, 35));
                     dl->AddRect      ({trackX, laneY + 1}, {trackX + trackW, laneY + laneH - 1},
@@ -361,7 +371,17 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
                                 IM_COL32(230, 160, 60, 180), warn);
                 }
             } else {
-                // Lane type doesn't accept clips at all
+                dl->AddRectFilled({trackX, laneY + 1}, {trackX + trackW, laneY + laneH - 1},
+                                  IM_COL32(180, 60, 60, 22));
+            }
+        } else if (isDragFaceClip) {
+            if (lane->type == TrackType::FaceData) {
+                // Green tint — face clips only land on FaceData lanes.
+                dl->AddRectFilled({trackX, laneY + 1}, {trackX + trackW, laneY + laneH - 1},
+                                  IM_COL32(80, 200, 130, 40));
+                dl->AddRect      ({trackX, laneY + 1}, {trackX + trackW, laneY + laneH - 1},
+                                  IM_COL32(120, 230, 160, 110), 0.f, 0, 1.5f);
+            } else {
                 dl->AddRectFilled({trackX, laneY + 1}, {trackX + trackW, laneY + laneH - 1},
                                   IM_COL32(180, 60, 60, 22));
             }
@@ -372,8 +392,11 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
     dl->AddText({trackX - headerW_ + 22, laneY + (laneH - ImGui::GetTextLineHeight()) * 0.5f},
                 kColTextDim, laneLabel);
 
-    // Scaffolded indicator for unimplemented types
-    if (def && !def->evaluate && def->id != TrackType::AnimClip) {
+    // Scaffolded indicator for unimplemented lane types (excludes lanes that
+    // accept real items even if their evaluate callback isn't wired yet).
+    const bool acceptsItems = (lane->type == TrackType::AnimClip ||
+                               lane->type == TrackType::FaceData);
+    if (def && !def->evaluate && !acceptsItems) {
         char badge[32]; std::snprintf(badge, sizeof(badge), "[%s]", laneLabel);
         const float bx = trackX + 4;
         dl->AddText({bx, laneY + (laneH - ImGui::GetTextLineHeight()) * 0.5f},
@@ -416,9 +439,15 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
                                   IM_COL32(0, 0, 0, 80), 3.f);
         }
 
-        // Item label (clip name)
-        if (item.assetIndex >= 0 && item.assetIndex < (int)state.clips.size()) {
-            const char* cname = state.clips[item.assetIndex].name.c_str();
+        // Item label — resolve name from the appropriate asset pool.
+        const char* cname = nullptr;
+        if (lane->type == TrackType::AnimClip &&
+            item.assetIndex >= 0 && item.assetIndex < (int)state.clips.size())
+            cname = state.clips[item.assetIndex].name.c_str();
+        else if (lane->type == TrackType::FaceData &&
+                 item.assetIndex >= 0 && item.assetIndex < (int)state.faceClips.size())
+            cname = state.faceClips[item.assetIndex].name.c_str();
+        if (cname) {
             ImVec2 ts = ImGui::CalcTextSize(cname);
             if (ts.x + 8.f <= cx1 - cx0)
                 dl->AddText({cx0 + 4, laneY + (laneH - ts.y) * 0.5f},
@@ -435,11 +464,9 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
         }
     }
 
-    // Ghost clip preview while dragging over a compatible AnimClip lane.
-    // Suppressed when skeleton types mismatch (orange "wrong type" text is shown instead).
-    if (isDragClip && lane->type == TrackType::AnimClip) {
-        const ImVec2 mouse = ImGui::GetIO().MousePos;
-        if (mouse.y >= laneY && mouse.y < laneY + laneH) {
+    // Ghost preview while dragging over a compatible lane.
+    if (mouse.y >= laneY && mouse.y < laneY + laneH) {
+        if (isDragClip && lane->type == TrackType::AnimClip) {
             const int dci = *(const int*)dragPay->Data;
             std::string clipType, actorType2;
             if (dci >= 0 && dci < (int)state.clips.size())
@@ -465,6 +492,25 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
                     if (gts.x + 8.f <= gx1 - gx0)
                         dl->AddText({gx0 + 4.f, laneY + (laneH - gts.y) * 0.5f},
                                     IM_COL32(200, 230, 255, 200), gname);
+                }
+            }
+        } else if (isDragFaceClip && lane->type == TrackType::FaceData) {
+            const int dfi = *(const int*)dragPay->Data;
+            if (dfi >= 0 && dfi < (int)state.faceClips.size()) {
+                const float gt  = std::max(0.f, XToSeq(mouse.x, trackX));
+                const float gx0 = std::max(SeqToX(gt,                                        trackX), trackX);
+                const float gx1 = std::min(SeqToX(gt + state.faceClips[dfi].duration, trackX),
+                                            trackX + trackW);
+                if (gx1 > gx0) {
+                    dl->AddRectFilled({gx0, laneY + 2}, {gx1, laneY + laneH - 2},
+                                      IM_COL32( 80, 210, 140,  80), 3.f);
+                    dl->AddRect      ({gx0, laneY + 2}, {gx1, laneY + laneH - 2},
+                                      IM_COL32(140, 240, 180, 220), 3.f, 0, 1.5f);
+                    const char*  gname = state.faceClips[dfi].name.c_str();
+                    const ImVec2 gts   = ImGui::CalcTextSize(gname);
+                    if (gts.x + 8.f <= gx1 - gx0)
+                        dl->AddText({gx0 + 4.f, laneY + (laneH - gts.y) * 0.5f},
+                                    IM_COL32(200, 245, 220, 200), gname);
                 }
             }
         }
@@ -609,10 +655,15 @@ void TimelinePanel::HandleInput(AppState& state,
                     }
                 } else if (dragTarget_ == DragTarget::ItemRight) {
                     const float sourceT = tMouse - item.seqStart + item.trimIn;
-                    if (item.assetIndex >= 0 && item.assetIndex < (int)state.clips.size()) {
-                        const float maxOut = state.clips[item.assetIndex].duration;
+                    float maxOut = 0.f;
+                    if (lane->type == TrackType::AnimClip &&
+                        item.assetIndex >= 0 && item.assetIndex < (int)state.clips.size())
+                        maxOut = state.clips[item.assetIndex].duration;
+                    else if (lane->type == TrackType::FaceData &&
+                             item.assetIndex >= 0 && item.assetIndex < (int)state.faceClips.size())
+                        maxOut = state.faceClips[item.assetIndex].duration;
+                    if (maxOut > 0.f)
                         item.trimOut = std::clamp(sourceT, item.trimIn + 0.05f, maxOut);
-                    }
                 }
             }
         }
@@ -665,8 +716,14 @@ void TimelinePanel::HandleInput(AppState& state,
 
         if (lane && dragItemIdx_ >= 0 && dragItemIdx_ < (int)lane->items.size()) {
             const auto& item = lane->items[dragItemIdx_];
-            if (item.assetIndex >= 0 && item.assetIndex < (int)state.clips.size())
-                ImGui::TextDisabled("%s", state.clips[item.assetIndex].name.c_str());
+            const char* itemName = nullptr;
+            if (lane->type == TrackType::AnimClip &&
+                item.assetIndex >= 0 && item.assetIndex < (int)state.clips.size())
+                itemName = state.clips[item.assetIndex].name.c_str();
+            else if (lane->type == TrackType::FaceData &&
+                     item.assetIndex >= 0 && item.assetIndex < (int)state.faceClips.size())
+                itemName = state.faceClips[item.assetIndex].name.c_str();
+            if (itemName) ImGui::TextDisabled("%s", itemName);
             ImGui::Separator();
             if (ImGui::MenuItem("Remove")) {
                 lane->items.erase(lane->items.begin() + dragItemIdx_);
@@ -677,7 +734,50 @@ void TimelinePanel::HandleInput(AppState& state,
     }
 }
 
-// ── Clip drag-drop placement ───────────────────────────────────────────────────
+// ── Face clip drag-drop placement ────────────────────────────────────────────
+
+void TimelinePanel::HandleFaceDrop(AppState& state, int faceClipIdx, ImVec2 dropPos,
+                                    float trackX, float trackW,
+                                    const std::vector<LaneCtx>& lanes)
+{
+    if (faceClipIdx < 0 || faceClipIdx >= (int)state.faceClips.size()) return;
+
+    for (const auto& lc : lanes) {
+        if (dropPos.y < lc.yTop || dropPos.y >= lc.yBot) continue;
+
+        TrackLane* lane = nullptr;
+        if (lc.actorIdx >= 0) {
+            for (auto& g : state.sequence.actorTracks)
+                if (g.actorIndex == lc.actorIdx && lc.laneIdx < (int)g.lanes.size()) {
+                    lane = &g.lanes[lc.laneIdx];
+                    break;
+                }
+        } else if (lc.laneIdx < (int)state.sequence.sceneTracks.size()) {
+            lane = &state.sequence.sceneTracks[lc.laneIdx];
+        }
+        if (!lane) continue;
+
+        if (lane->type != TrackType::FaceData) return;
+
+        const FaceClip& fc   = state.faceClips[faceClipIdx];
+        const float seqStart = std::max(0.f, XToSeq(dropPos.x, trackX));
+
+        SequenceItem item;
+        item.assetIndex = faceClipIdx;
+        item.seqStart   = seqStart;
+        item.trimIn     = 0.f;
+        item.trimOut    = fc.duration;
+        item.blendIn    = 0.f;
+        item.blendOut   = 0.f;
+
+        lane->items.push_back(item);
+        state.time    = seqStart;
+        state.playing = false;
+        return;
+    }
+}
+
+// ── Body clip drag-drop placement ─────────────────────────────────────────────
 
 void TimelinePanel::HandleDrop(AppState& state, int clipIdx, ImVec2 dropPos,
                                 float trackX, float trackW,

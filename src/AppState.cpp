@@ -1,9 +1,11 @@
 #include "AppState.h"
 #include "BsaReader.h"
+#include "FaceClip.h"
 #include "HavokSkeleton.h"
 #include "HavokAnimation.h"
 #include "DotNetHost.h"
 #include "MuFeeConfig.h"
+#include <nlohmann/json.hpp>
 #include "ui/TrackRegistry.h"
 #include <cmath>
 #include <cstring>
@@ -72,10 +74,12 @@ void AppState::Tick(float dt)
 void AppState::NewProject()
 {
     clips.clear();
+    faceClips.clear();
     cast.clear();
     actors.clear();
     skeletons.clear();
     sequence     = Sequence{};
+    loadedCell   = CellContext{};
     time         = 0.f;
     playing      = false;
     selectedClip = -1;
@@ -109,6 +113,27 @@ int AppState::LoadClipFromPath(const char* path, char* errOut, int errLen)
         if (DotNetHost::HkxToXml(path, &xmlBuf, &xmlLen, errOut, errLen)) {
             ok = LoadHavokAnimationXmlFromBuffer(xmlBuf, xmlLen, stem.c_str(),
                                                  clip, errOut, errLen);
+            if (ok) {
+                // Also extract face annotations from the same XML buffer — free
+                // bonus since we already paid for the HkxToXml round-trip.
+                FaceClip fc;
+                char faceErr[256] = {};
+                if (fc.ParseFromXml(xmlBuf, xmlLen, stem.c_str(), faceErr, sizeof(faceErr))) {
+                    if (!fc.channels.empty()) {
+                        fc.sourcePath = path;
+                        faceClips.push_back(std::move(fc));
+                        char msg[128];
+                        std::snprintf(msg, sizeof(msg),
+                            "Face clip extracted — %d morph channels",
+                            (int)faceClips.back().channels.size());
+                        PushToast(msg, ToastLevel::Info);
+                    }
+                    // If channels is empty it just means no MorphFace annotations
+                    // in this HKX — silently fine.
+                } else if (faceErr[0]) {
+                    PushToast(std::string("Face parse: ") + faceErr, ToastLevel::Warning);
+                }
+            }
             DotNetHost::FreeBuffer(xmlBuf);
         }
     } else {
@@ -122,6 +147,101 @@ int AppState::LoadClipFromPath(const char* path, char* errOut, int errLen)
     const int idx     = static_cast<int>(clips.size());
     clips.push_back(std::move(clip));
     return idx;
+}
+
+// ── LoadFaceClipFromPath ──────────────────────────────────────────────────────
+
+int AppState::LoadFaceClipFromPath(const char* path, char* errOut, int errLen)
+{
+    FaceClip clip;
+    std::string stem = std::filesystem::path(path).stem().string();
+
+    const char* ext   = std::strrchr(path, '.');
+    const bool  isHkx = ext && (_stricmp(ext, ".hkx") == 0);
+
+    bool ok = false;
+    if (isHkx) {
+        if (!DotNetHost::Ready()) {
+            std::snprintf(errOut, errLen,
+                "HKX import unavailable — .NET 10 runtime or SctBridge.dll not found");
+            return -1;
+        }
+        char* xmlBuf = nullptr; int xmlLen = 0;
+        if (DotNetHost::HkxToXml(path, &xmlBuf, &xmlLen, errOut, errLen)) {
+            ok = clip.ParseFromXml(xmlBuf, xmlLen, stem.c_str(), errOut, errLen);
+            DotNetHost::FreeBuffer(xmlBuf);
+        }
+    } else {
+        // Direct XML path.
+        std::ifstream f(path, std::ios::binary);
+        if (!f) {
+            std::snprintf(errOut, errLen, "Cannot open: %s", path);
+            return -1;
+        }
+        std::string xml((std::istreambuf_iterator<char>(f)), {});
+        ok = clip.ParseFromXml(xml.c_str(), (int)xml.size(), stem.c_str(),
+                               errOut, errLen);
+    }
+
+    if (!ok) return -1;
+
+    clip.sourcePath     = path;
+    const int idx       = static_cast<int>(faceClips.size());
+    faceClips.push_back(std::move(clip));
+    return idx;
+}
+
+// ── LoadCell / UnloadCell ─────────────────────────────────────────────────────
+
+bool AppState::LoadCell(const char* formKey, const char* cellName,
+                        char* errOut, int errLen)
+{
+    if (!DotNetHost::PluginReady()) {
+        std::snprintf(errOut, errLen, "plugin bridge not available — load a plugin first");
+        return false;
+    }
+
+    std::string jsonStr;
+    if (!DotNetHost::CellGetRefs(formKey, jsonStr, errOut, errLen))
+        return false;
+
+    try {
+        using json = nlohmann::json;
+        auto arr = json::parse(jsonStr);
+
+        CellContext ctx;
+        ctx.formKey = formKey;
+        ctx.name    = (cellName && *cellName) ? cellName : formKey;
+        ctx.loaded  = true;
+
+        for (const auto& j : arr) {
+            CellPlacedRef ref;
+            ref.refFormKey  = j.value("refFormKey",  std::string{});
+            ref.baseFormKey = j.value("baseFormKey", std::string{});
+            ref.nifPath     = j.value("nifPath",     std::string{});
+            ref.posX        = j.value("posX",  0.f);
+            ref.posY        = j.value("posY",  0.f);
+            ref.posZ        = j.value("posZ",  0.f);
+            ref.rotX        = j.value("rotX",  0.f);
+            ref.rotY        = j.value("rotY",  0.f);
+            ref.rotZ        = j.value("rotZ",  0.f);
+            ref.scale       = j.value("scale", 1.f);
+            if (ref.nifPath.empty()) continue;
+            ctx.refs.push_back(std::move(ref));
+        }
+
+        loadedCell = std::move(ctx);
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::snprintf(errOut, errLen, "cell JSON parse error: %s", e.what());
+        return false;
+    }
+}
+
+void AppState::UnloadCell()
+{
+    loadedCell = CellContext{};
 }
 
 const Skeleton* AppState::SkeletonForCast(int castIndex) const

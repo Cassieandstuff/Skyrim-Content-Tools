@@ -31,6 +31,15 @@ struct NpcRecord {
     std::vector<std::string> headPartNifs;
 };
 
+// A CELL record found by sct_cell_search.
+struct CellRecord {
+    uint32_t    formId = 0;
+    std::string formKey;      // "XXXXXXXX:Plugin.esm"
+    std::string editorId;
+    std::string name;         // in-game display name (FULL); may be empty
+    std::string pluginSource; // e.g. "Skyrim.esm"
+};
+
 // Parameters for creating a new NPC_ record in the project mod.
 struct NpcCreateParams {
     std::string editorId;

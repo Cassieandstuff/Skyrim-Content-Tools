@@ -65,10 +65,14 @@ private:
     void HandleInput(AppState& state, float trackX, float trackW,
                      float areaY, float fullH, float rulerY,
                      const std::vector<LaneCtx>& lanes);
-    // Called after DrawTrackArea builds lane geometry; places a dragged clip.
+    // Called after DrawTrackArea builds lane geometry; places a dragged body clip.
     void HandleDrop(AppState& state, int clipIdx, ImVec2 dropPos,
                     float trackX, float trackW,
                     const std::vector<LaneCtx>& lanes);
+    // Places a dragged face clip onto a FaceData lane.
+    void HandleFaceDrop(AppState& state, int faceClipIdx, ImVec2 dropPos,
+                        float trackX, float trackW,
+                        const std::vector<LaneCtx>& lanes);
 
     // Convert between sequence seconds and screen X.
     float SeqToX(float t, float trackX) const { return trackX + t * pxPerSec_ - scrollX_; }

@@ -59,4 +59,18 @@ struct DotNetHost {
     static bool NpcCreate(const char* inJson,
                           std::string& outJson,
                           char* errOut, int errLen);
+
+    // Search interior CELL records; outJson receives a UTF-8 JSON array.
+    // query = substring matched against EditorID and full name (empty = all).
+    static bool CellSearch(const char* query, int maxResults,
+                           std::string& outJson,
+                           char* errOut, int errLen);
+
+    // Fetch all placed objects in a cell as a JSON array of CellRefRecord.
+    // formKey = FormKey string as returned by CellSearch ("XXXXXXXX:Plugin.esm").
+    // Each entry carries nifPath, position, rotation (radians, Havok Z-up), scale,
+    // and a baseFormKey suitable for use as a mesh-catalog instancing key.
+    static bool CellGetRefs(const char* formKey,
+                            std::string& outJson,
+                            char* errOut, int errLen);
 };
