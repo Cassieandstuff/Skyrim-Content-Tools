@@ -3,6 +3,12 @@
 #include <string>
 #include <vector>
 
+// One body-part NIF resolved from NPC_ WornArmor → Armor → ArmorAddon.
+struct NpcBodyPart {
+    std::string slot;    // "body", "hands", "feet"
+    std::string nifPath; // data-relative path, always includes "Meshes\" prefix
+};
+
 // Data fetched from or created in a plugin file.
 // Mirrors PluginBridge.NpcRecord (camelCase JSON).
 struct NpcRecord {
@@ -12,10 +18,17 @@ struct NpcRecord {
     std::string name;
     std::string raceEditorId;
     bool        isFemale          = false;
-    std::string skeletonModelPath; // race skeleton NIF path (C++ derives creature type from this)
-    std::string expressionTriPath; // HDPT Part NAM0=1; empty if race not in loaded masters
-    std::string facegenNifPath;    // Meshes/Actors/Character/FaceGenData/FaceGeom/{plugin}/{id}.nif
+    std::string skeletonModelPath;              // race skeleton NIF path (C++ derives creature type from this)
+    std::vector<std::string> expressionTriPaths; // all HDPT Part TRI paths across all head parts
+    std::string facegenNifPath;                 // Meshes/Actors/Character/FaceGenData/FaceGeom/{plugin}/{id}.nif
     std::string pluginSource;      // source plugin filename, e.g. "Plugin.esp"
+
+    // Body geometry from WornArmor → Armor → ArmorAddon (body, hands, feet slots).
+    std::vector<NpcBodyPart> bodyParts;
+
+    // Head part NIFs: race-default parts (ears, brows, teeth…) + NPC-chosen
+    // parts (hair, eyes). Excludes the facegeom NIF (that's facegenNifPath).
+    std::vector<std::string> headPartNifs;
 };
 
 // Parameters for creating a new NPC_ record in the project mod.

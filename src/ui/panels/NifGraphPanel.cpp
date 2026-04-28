@@ -228,7 +228,7 @@ void NifGraphPanel::DrawGraph(bool extraDataOnly)
 
 // ── IPanel::Draw ──────────────────────────────────────────────────────────────
 
-void NifGraphPanel::Draw(AppState& /*state*/)
+void NifGraphPanel::Draw(AppState& state)
 {
     if (!ImGui::Begin(PanelID())) { ImGui::End(); return; }
 
@@ -244,7 +244,7 @@ void NifGraphPanel::Draw(AppState& /*state*/)
         ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
         ofn.lpstrTitle  = "Open NIF";
         if (GetOpenFileNameA(&ofn))
-            m_s.LoadFile(buf);
+            m_s.LoadFile(buf, state);
 #endif
     }
 

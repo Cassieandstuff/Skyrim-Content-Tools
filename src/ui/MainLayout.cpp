@@ -22,12 +22,12 @@ MainLayout::MainLayout()
           { "Scene",   ViewportMode::Scene   },
           { "Face",    ViewportMode::Face    },
           { "Cameras", ViewportMode::Cameras },
-      }, m_sceneRenderer)
+      }, m_renderer)
     , m_animViewport({                          // Anim Editor viewport tabs
           { "Scene",   ViewportMode::Scene   },
           { "Bones",   ViewportMode::Bones   },
-      }, m_animRenderer, "Anim Viewport")       // distinct window name
-    , m_nifState(m_nifRenderer)
+      }, m_renderer, "Anim Viewport")           // distinct window name
+    , m_nifState(m_renderer)
     , m_nifBrowser(m_nifState)
     , m_nifGraph(m_nifState)
     , m_nifProps(m_nifState)
@@ -35,7 +35,6 @@ MainLayout::MainLayout()
 {
     // ── Persistent settings (data folder, etc.) ───────────────────────────────
     m_state.LoadSettings();
-    m_nifState.dataFolder = &m_state.dataFolder;
 
     // ── Plugin backend ────────────────────────────────────────────────────────
     if (DotNetHost::PluginReady())
@@ -47,7 +46,7 @@ MainLayout::MainLayout()
     // ── App tabs ──────────────────────────────────────────────────────────────
     TabRegistry::Get().Register({
         AppTab::SceneEditor, "  Scene Editor  ",
-        { &m_bin, &m_actorProps, &m_sceneGraph, &m_sceneViewport, &m_timeline }
+        { &m_bin, &m_sceneGraph, &m_sceneViewport, &m_timeline, &m_inspector }
     });
     TabRegistry::Get().Register({
         AppTab::AnimEditor, "  Anim Editor  ",
@@ -56,6 +55,10 @@ MainLayout::MainLayout()
     TabRegistry::Get().Register({
         AppTab::NifEditor, "  NIF Editor  ",
         { &m_nifBrowser, &m_nifGraph, &m_nifProps, &m_nifViewport }
+    });
+    TabRegistry::Get().Register({
+        AppTab::Workflow, "  Workflow  ",
+        { &m_pluginBrowser }
     });
 }
 
@@ -93,6 +96,42 @@ void MainLayout::Draw()
                 if (io.KeyShift) DoSaveProjectAs();
                 else             DoSaveProject();
             }
+        }
+        if (!io.WantTextInput && !io.KeyCtrl) {
+            // Playback
+            if (ImGui::IsKeyPressed(ImGuiKey_Space, false))
+                m_state.playing ^= true;
+            if (ImGui::IsKeyPressed(ImGuiKey_K, false)) {
+                m_state.playing = false;
+                m_state.time    = 0.f;
+            }
+            // Frame step  (comma = back, period = forward)
+            constexpr float kFrame = 1.f / 30.f;
+            if (ImGui::IsKeyPressed(ImGuiKey_Comma, false))
+                m_state.time = std::max(0.f, m_state.time - kFrame);
+            if (ImGui::IsKeyPressed(ImGuiKey_Period, false)) {
+                const float dur = m_state.sequence.Duration();
+                m_state.time = m_state.time + kFrame;
+                if (dur > 0.f) m_state.time = std::min(m_state.time, dur);
+            }
+            // Jump to start / end
+            if (ImGui::IsKeyPressed(ImGuiKey_Home, false)) {
+                m_state.time    = 0.f;
+                m_state.playing = false;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_End, false)) {
+                const float dur = m_state.sequence.Duration();
+                m_state.time    = dur > 0.f ? dur : 0.f;
+                m_state.playing = false;
+            }
+            // Deselect
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                m_state.selectedCast = -1;
+            // Tab switch
+            if (ImGui::IsKeyPressed(ImGuiKey_1, false)) m_state.activeTab = AppTab::SceneEditor;
+            if (ImGui::IsKeyPressed(ImGuiKey_2, false)) m_state.activeTab = AppTab::AnimEditor;
+            if (ImGui::IsKeyPressed(ImGuiKey_3, false)) m_state.activeTab = AppTab::NifEditor;
+            if (ImGui::IsKeyPressed(ImGuiKey_4, false)) m_state.activeTab = AppTab::Workflow;
         }
     }
 
@@ -138,6 +177,7 @@ void MainLayout::Draw()
     }
 
     DrawStatusBar();
+    DrawToasts();
 }
 
 // ── Menu bar ──────────────────────────────────────────────────────────────────
@@ -167,11 +207,14 @@ void MainLayout::DrawMenuBar()
     }
 
     if (ImGui::BeginMenu("View")) {
-        ImGui::SeparatorText("Scene Editor Panels");
+        ImGui::SeparatorText("Scene Editor");
         if (ImGui::MenuItem("Bin"))         {}
         if (ImGui::MenuItem("Scene Graph")) {}
         if (ImGui::MenuItem("Viewport"))    {}
         if (ImGui::MenuItem("Timeline"))    {}
+        if (ImGui::MenuItem("Inspector"))   {}
+        ImGui::SeparatorText("Workflow");
+        if (ImGui::MenuItem("Plugin Browser")) {}
         ImGui::Separator();
         if (ImGui::MenuItem("Reset Layout"))
             m_layoutInitialized[(int)m_state.activeTab] = false;
@@ -223,22 +266,98 @@ void MainLayout::DrawStatusBar()
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(3);
 
-    ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.f), "\xe2\x97\x8f");  // ●
+    // Zone 1: status dot + message
+    const ImVec4 dotCol = m_fileErr[0]
+        ? ImVec4(1.f, 0.4f, 0.4f, 1.f)
+        : ImVec4(0.3f, 0.9f, 0.4f, 1.f);
+    ImGui::TextColored(dotCol, "\xe2\x97\x8f");  // ●
     ImGui::SameLine(0.f, 6.f);
-    ImGui::TextDisabled("%s", m_status);
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
+    if (m_fileErr[0])
+        ImGui::TextColored(ImVec4(1.f, 0.5f, 0.5f, 1.f), "%s", m_fileErr);
+    else
+        ImGui::TextDisabled("%s", m_status);
 
+    // Zone 2: scene stats
+    ImGui::SameLine(0.f, 16.f);
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0.f, 8.f);
     const float seqDur = m_state.sequence.Duration();
-    if (!m_state.actors.empty() || seqDur > 0.f) {
-        ImGui::TextDisabled("%d actor(s)  |  seq %.2fs",
-                            (int)m_state.actors.size(), seqDur);
-    } else {
-        ImGui::TextDisabled("No project loaded");
-    }
+    if (!m_state.actors.empty() || seqDur > 0.f)
+        ImGui::TextDisabled("%d actor(s)  %.2fs", (int)m_state.actors.size(), seqDur);
+    else
+        ImGui::TextDisabled("No actors");
+
+    // Zone 3: playback state
+    ImGui::SameLine(0.f, 16.f);
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0.f, 8.f);
+    if (m_state.playing)
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f),
+                           "\xe2\x96\xb6 PLAYING  %.2fs", m_state.time);
+    else
+        ImGui::TextDisabled("\xe2\x96\xa0 %.2fs", m_state.time);  // ■
+
+    // Zone 4: right-aligned project name
+    char projBuf[256];
+    std::snprintf(projBuf, sizeof(projBuf), "%s%s",
+                  m_state.projectName.c_str(),
+                  m_state.projectDirty ? " *" : "");
+    const float projW  = ImGui::CalcTextSize(projBuf).x;
+    const float rightX = ImGui::GetContentRegionMax().x - projW - 8.f;
+    if (rightX > ImGui::GetCursorPosX())
+        ImGui::SameLine(rightX);
+    ImGui::TextDisabled("%s", projBuf);
 
     ImGui::End();
+}
+
+// ── Toast notifications ───────────────────────────────────────────────────────
+
+void MainLayout::DrawToasts()
+{
+    if (m_state.toasts.empty()) return;
+
+    ImDrawList*          fgDl = ImGui::GetForegroundDrawList();
+    const ImGuiViewport* vp   = ImGui::GetMainViewport();
+    const float statusH  = ImGui::GetFrameHeight() + 8.f;
+    const float toastW   = 320.f;
+    const float toastH   = 36.f;
+    const float pad      = 6.f;
+    const float textLineH = ImGui::GetTextLineHeight();
+
+    float y = vp->WorkPos.y + vp->WorkSize.y - statusH - pad;
+
+    int shown = 0;
+    for (int i = (int)m_state.toasts.size() - 1; i >= 0 && shown < 5; --i) {
+        const Toast& t = m_state.toasts[i];
+        y -= toastH + pad;
+        const float x = vp->WorkPos.x + vp->WorkSize.x - toastW - pad;
+
+        ImU32 bg     = IM_COL32(28,  33,  48, 235);
+        ImU32 border = IM_COL32(60,  70, 105, 210);
+        ImU32 text   = IM_COL32(200, 210, 230, 255);
+        if (t.level == ToastLevel::Warning) {
+            bg     = IM_COL32(46, 38, 18, 235);
+            border = IM_COL32(175, 125, 38, 210);
+        } else if (t.level == ToastLevel::Error) {
+            bg     = IM_COL32(46, 18, 18, 235);
+            border = IM_COL32(185,  50, 50, 210);
+        }
+
+        fgDl->AddRectFilled({x, y}, {x + toastW, y + toastH}, bg, 5.f);
+        fgDl->AddRect      ({x, y}, {x + toastW, y + toastH}, border, 5.f, 0, 1.f);
+
+        // TTL progress bar at bottom edge
+        const float barW = toastW * std::clamp(t.ttl / 4.f, 0.f, 1.f);
+        if (barW > 0.5f)
+            fgDl->AddRectFilled({x + 1, y + toastH - 3.f},
+                                {x + barW - 1, y + toastH - 1.f},
+                                border, 0.f, ImDrawFlags_RoundCornersBottom);
+
+        fgDl->AddText({x + 10.f, y + (toastH - textLineH) * 0.5f},
+                      text, t.message.c_str());
+        ++shown;
+    }
 }
 
 // ── Window title ──────────────────────────────────────────────────────────────
@@ -359,23 +478,33 @@ void MainLayout::SetupDefaultLayout(ImGuiID id, AppTab tab)
         return;
     }
 
-    // Scene Editor: left column | scene graph | viewport + timeline
-    ImGuiID left, rest;
-    ImGui::DockBuilderSplitNode(id, ImGuiDir_Left, 0.17f, &left, &rest);
-    ImGuiID binId, propsId;
-    ImGui::DockBuilderSplitNode(left, ImGuiDir_Up, 0.60f, &binId, &propsId);
+    if (tab == AppTab::Workflow) {
+        // Workflow tab: Plugin Browser fills the space; future panels dock alongside it.
+        ImGui::DockBuilderDockWindow("Plugin Browser", id);
+        ImGui::DockBuilderFinish(id);
+        return;
+    }
 
-    ImGuiID graphId, mainArea;
-    ImGui::DockBuilderSplitNode(rest, ImGuiDir_Left, 0.22f, &graphId, &mainArea);
+    // Scene Editor:
+    //   Top (65%): [Bin  |  Scene Graph  |  Viewport]
+    //   Bottom (35%): [Timeline  |  Inspector]
+    ImGuiID topArea, bottomArea;
+    ImGui::DockBuilderSplitNode(id, ImGuiDir_Down, 0.35f, &bottomArea, &topArea);
 
-    ImGuiID viewportId, timelineId;
-    ImGui::DockBuilderSplitNode(mainArea, ImGuiDir_Up, 0.60f, &viewportId, &timelineId);
+    ImGuiID binId, topRest;
+    ImGui::DockBuilderSplitNode(topArea, ImGuiDir_Left, 0.17f, &binId, &topRest);
 
-    ImGui::DockBuilderDockWindow("Bin",              binId);
-    ImGui::DockBuilderDockWindow("Actor Properties", propsId);
-    ImGui::DockBuilderDockWindow("Scene Graph",      graphId);
-    ImGui::DockBuilderDockWindow("Viewport",         viewportId);
-    ImGui::DockBuilderDockWindow("Timeline",         timelineId);
+    ImGuiID graphId, viewportId;
+    ImGui::DockBuilderSplitNode(topRest, ImGuiDir_Left, 0.265f, &graphId, &viewportId);
+
+    ImGuiID timelineId, inspectorId;
+    ImGui::DockBuilderSplitNode(bottomArea, ImGuiDir_Right, 0.22f, &inspectorId, &timelineId);
+
+    ImGui::DockBuilderDockWindow("Bin",         binId);
+    ImGui::DockBuilderDockWindow("Scene Graph", graphId);
+    ImGui::DockBuilderDockWindow("Viewport",    viewportId);
+    ImGui::DockBuilderDockWindow("Timeline",    timelineId);
+    ImGui::DockBuilderDockWindow("Inspector",   inspectorId);
 
     ImGui::DockBuilderFinish(id);
 }

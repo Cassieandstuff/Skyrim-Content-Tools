@@ -1,12 +1,21 @@
 #pragma once
+#include "ActorDocument.h"
 #include "AnimClip.h"
 #include "HavokSkeleton.h"
-#include "CastEntry.h"
 #include "IPluginBackend.h"
 #include "Sequence.h"
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+// ── Toast notifications ───────────────────────────────────────────────────────
+enum class ToastLevel { Info, Warning, Error };
+struct Toast {
+    std::string message;
+    float       ttl;
+    ToastLevel  level = ToastLevel::Info;
+};
 
 // ── DiscoveredSkeleton ─────────────────────────────────────────────────────────
 // One skeleton HKX found by scanning the data folder — either loose or inside a BSA.
@@ -29,6 +38,7 @@ enum class AppTab {
     SceneEditor = 0,
     AnimEditor,
     NifEditor,
+    Workflow,       // Plugin browser, asset promotion, previs generation
 };
 
 // ── Actor ──────────────────────────────────────────────────────────────────────
@@ -52,7 +62,7 @@ struct AppState {
     std::vector<Skeleton>  skeletons; // loaded skeleton definitions (deduplicated)
 
     // ── Cast ─────────────────────────────────────────────────────────────────────
-    std::vector<CastEntry> cast;      // character definitions (proto-NPC records)
+    std::vector<ActorDocument> cast;  // actor authoring documents
 
     // ── Scene ─────────────────────────────────────────────────────────────────────
     std::vector<Actor>     actors;    // actor instances active in the scene
@@ -72,6 +82,15 @@ struct AppState {
     std::string                   dataFolder;           // path to the game's Data directory
     std::vector<DiscoveredSkeleton> discoveredSkeletons; // populated by ScanDataFolder()
     std::vector<std::string>      discoveredPlugins;    // .esp/.esm/.esl filenames at dataFolder root
+    // Ordered BSA search list (highest priority first): plugin-associated BSAs then
+    // ini-listed base-game BSAs.  Rebuilt by ScanDataFolder().
+    std::vector<std::string>      bsaSearchList;
+
+    // MFEE (MuFacialExpressionExtended) vanilla→extended TRI map.
+    // Key:   normalized vanilla TRI path (lowercase, backslash, no "meshes\" prefix)
+    // Value: normalized extended ARKit TRI path (same form, prepend "meshes\" for ResolveAsset)
+    // Populated by ScanDataFolder() when the MFEE ini is present; empty otherwise.
+    std::unordered_map<std::string, std::string> mfeeExtendedTris;
 
     // ── Plugin backend ────────────────────────────────────────────────────────────────
     // Set to std::make_unique<MutagenBackend>() after DotNetHost::Init() succeeds.
@@ -82,6 +101,10 @@ struct AppState {
     std::string projectPath;            // absolute path to current .sct file; empty if unsaved
     std::string projectName = "Untitled";
     bool        projectDirty = false;
+
+    // ── Toast notifications ───────────────────────────────────────────────────────────
+    std::vector<Toast> toasts;
+    void PushToast(std::string msg, ToastLevel level = ToastLevel::Info, float duration = 4.f);
 
     // ── Error / status ──────────────────────────────────────────────────────────────
     char   importErr[256] = {};
@@ -100,7 +123,13 @@ struct AppState {
     int LoadClipFromPath(const char* path, char* errOut, int errLen);
 
     // Scan dataFolder/meshes/actors/ for skeleton HKX files; fills discoveredSkeletons.
+    // Also builds bsaSearchList from Skyrim.ini + plugin-associated BSAs.
     void ScanDataFolder();
+
+    // Resolve a data-folder-relative asset path to raw bytes.
+    // Checks loose file first, then walks bsaSearchList in priority order.
+    // relPath uses either slash direction, any case — normalised internally.
+    bool ResolveAsset(const std::string& relPath, std::vector<uint8_t>& outBytes) const;
 
     // Persist/restore dataFolder to sct_settings.ini (working directory).
     void LoadSettings();
@@ -123,6 +152,18 @@ struct AppState {
     // The cast entry is pre-filled with name/editorId/npcRecord; skeletonIndex = -1.
     // Returns the new actorIndex, or -1 on failure.
     int AddActorFromRecord(const NpcRecord& rec);
+
+    // Re-link an existing cast entry's identity + asset-cache fields to a new
+    // NpcRecord.  Updates formId/formKey/raceEditorId/pluginSource/isFemale,
+    // headNifPath, expressionTriPaths, headTriPath, and runs MFEE mapping to
+    // rebuild extendedTriPaths.  Does NOT overwrite name/editorId (caller keeps
+    // the author-set values).  Sets projectDirty = true.
+    void RelinkActorFromRecord(int castIdx, const NpcRecord& rec);
+
+    // Re-run the MFEE vanilla→extended mapping on an existing cast entry using
+    // the current mfeeExtendedTris map (populated by ScanDataFolder).
+    // No-op if expressionTriPaths is empty.  Clears the TRI doc cache.
+    void RemapMfeeForActor(int castIdx);
 
     // Load a skeleton (loose file or extracted from BSA) and assign it to an
     // existing cast entry.  Returns true on success.

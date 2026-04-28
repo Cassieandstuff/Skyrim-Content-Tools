@@ -158,53 +158,46 @@ static bool ResolveFormatFromLegacy(const DdsPixelFormat& pf, TexFormat& out)
     return false;
 }
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Shared implementation (operates on raw bytes already in memory) ──────────
 
-unsigned int DdsLoadGLTexture(const std::string& path)
+static unsigned int DdsUploadFromMemory(const uint8_t* data, size_t size,
+                                        const char* logSrc)
 {
-    FILE* f = nullptr;
-#if defined(_WIN32)
-    fopen_s(&f, path.c_str(), "rb");
-#else
-    f = fopen(path.c_str(), "rb");
-#endif
-    if (!f) return 0;
+    if (size < 4 + sizeof(DdsHeader)) return 0;
 
-    auto readU32 = [&]() -> uint32_t {
-        uint32_t v = 0;
-        fread(&v, 4, 1, f);
-        return v;
+    size_t cursor = 0;
+    auto readBytes = [&](void* dst, size_t n) -> bool {
+        if (cursor + n > size) return false;
+        std::memcpy(dst, data + cursor, n);
+        cursor += n;
+        return true;
     };
 
-    uint32_t magic = readU32();
-    if (magic != kDdsMagic) { fclose(f); return 0; }
+    uint32_t magic = 0;
+    if (!readBytes(&magic, 4) || magic != kDdsMagic) return 0;
 
     DdsHeader hdr;
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return 0; }
+    if (!readBytes(&hdr, sizeof(hdr))) return 0;
 
-    const uint32_t w       = hdr.width;
-    const uint32_t h       = hdr.height;
+    const uint32_t w        = hdr.width;
+    const uint32_t h        = hdr.height;
     const uint32_t mipCount = (hdr.mipMapCount > 0) ? hdr.mipMapCount : 1;
 
     TexFormat fmt;
-    bool hasDX10 = false;
-
     if ((hdr.ddspf.flags & kDDPF_FOURCC) && hdr.ddspf.fourCC == kFourCC_DX10) {
-        hasDX10 = true;
         DdsHeaderDX10 dx10;
-        if (fread(&dx10, sizeof(dx10), 1, f) != 1) { fclose(f); return 0; }
+        if (!readBytes(&dx10, sizeof(dx10))) return 0;
         if (!ResolveFormatFromDX10(dx10.dxgiFormat, fmt)) {
             fprintf(stderr, "[DDS] Unsupported DXGI format %u in '%s'\n",
-                    dx10.dxgiFormat, path.c_str());
-            fclose(f); return 0;
+                    dx10.dxgiFormat, logSrc);
+            return 0;
         }
     } else {
         if (!ResolveFormatFromLegacy(hdr.ddspf, fmt)) {
-            fprintf(stderr, "[DDS] Unsupported legacy format in '%s'\n", path.c_str());
-            fclose(f); return 0;
+            fprintf(stderr, "[DDS] Unsupported legacy format in '%s'\n", logSrc);
+            return 0;
         }
     }
-    (void)hasDX10;
 
     unsigned int texId = 0;
     glGenTextures(1, &texId);
@@ -223,45 +216,67 @@ unsigned int DdsLoadGLTexture(const std::string& path)
         const uint32_t bh = (mh + 3) / 4;
 
         GLsizei dataSize;
-        if (fmt.compressed) {
+        if (fmt.compressed)
             dataSize = (GLsizei)(bw * bh * fmt.blockSize);
-        } else {
+        else
             dataSize = (GLsizei)(mw * mh * fmt.blockSize);
-        }
 
-        std::vector<uint8_t> buf((size_t)dataSize);
-        if (fread(buf.data(), 1, (size_t)dataSize, f) != (size_t)dataSize) {
-            ok = false; break;
-        }
+        if (cursor + (size_t)dataSize > size) { ok = false; break; }
+        const uint8_t* mipData = data + cursor;
+        cursor += (size_t)dataSize;
 
         if (fmt.compressed) {
             glCompressedTexImage2D(GL_TEXTURE_2D, (GLint)mip,
                                    fmt.internalFormat,
                                    (GLsizei)mw, (GLsizei)mh, 0,
-                                   dataSize, buf.data());
+                                   dataSize, mipData);
         } else {
             glTexImage2D(GL_TEXTURE_2D, (GLint)mip,
                          (GLint)fmt.internalFormat,
                          (GLsizei)mw, (GLsizei)mh, 0,
-                         fmt.baseFormat, fmt.dataType, buf.data());
+                         fmt.baseFormat, fmt.dataType, mipData);
         }
 
-        GLenum err = glGetError();
-        if (err != GL_NO_ERROR) {
+        const GLenum err = glGetError();
+        if (err != GL_NO_ERROR)
             fprintf(stderr, "[DDS] GL error 0x%X uploading mip %u of '%s'\n",
-                    err, mip, path.c_str());
-        }
+                    err, mip, logSrc);
 
         mw = (mw > 1) ? mw / 2 : 1;
         mh = (mh > 1) ? mh / 2 : 1;
     }
 
+    if (!ok) { glDeleteTextures(1, &texId); return 0; }
+    return texId;
+}
+
+// ── Public entry points ───────────────────────────────────────────────────────
+
+unsigned int DdsLoadGLTexture(const std::string& path)
+{
+    FILE* f = nullptr;
+#if defined(_WIN32)
+    fopen_s(&f, path.c_str(), "rb");
+#else
+    f = fopen(path.c_str(), "rb");
+#endif
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    long fileLen = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (fileLen <= 0) { fclose(f); return 0; }
+
+    std::vector<uint8_t> buf((size_t)fileLen);
+    if (fread(buf.data(), 1, (size_t)fileLen, f) != (size_t)fileLen) {
+        fclose(f); return 0;
+    }
     fclose(f);
 
-    if (!ok) {
-        glDeleteTextures(1, &texId);
-        return 0;
-    }
+    return DdsUploadFromMemory(buf.data(), buf.size(), path.c_str());
+}
 
-    return texId;
+unsigned int DdsLoadGLTextureFromBuffer(const uint8_t* data, size_t size)
+{
+    return DdsUploadFromMemory(data, size, "<buffer>");
 }

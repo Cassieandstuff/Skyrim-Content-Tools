@@ -50,4 +50,5 @@ public:
 private:
     FILE*                    m_file = nullptr;
     std::vector<BsaFileInfo> m_files;
+    bool                     m_embedFileNames = false; // archiveFlags & 0x100
 };

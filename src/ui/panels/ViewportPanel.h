@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "Pose.h"
 #include "renderer/ISceneRenderer.h"
+#include <map>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -50,12 +51,31 @@ private:
     Camera  camera_;
 
     // ── Per-actor render cache ────────────────────────────────────────────────
+
+    // Resolved skin binding for one mesh: maps skin-local bone indices to
+    // Havok skeleton bone indices plus cached inverse-bind matrices.
+    struct MeshSkinBinding {
+        bool                   isSkinned = false;
+        std::vector<int>       skelBoneIdx;     // skeleton bone index per skin bone (-1 = not found)
+        std::vector<glm::mat4> inverseBindMats; // NIF skin space → bone local space
+    };
+
+    // Base NIF positions stored for CPU-side morph blending.
+    struct MeshMorphBase {
+        std::vector<glm::vec3> positions;  // original NIF vertex positions
+        int                    vertexCount = 0;
+    };
+
     struct ActorRenderData {
-        Pose                    refPose;
-        Pose                    pose;
-        std::vector<MeshHandle> meshHandles;    // GPU meshes uploaded from nifPath
-        std::vector<glm::mat4>  meshTransforms; // per-mesh toRoot from NifDocument
-        std::string             loadedNifPath;  // path these handles came from
+        Pose                          refPose;
+        Pose                          pose;
+        std::vector<MeshHandle>       meshHandles;      // GPU meshes uploaded from nifPath
+        std::vector<TextureHandle>    textureHandles;   // diffuse textures, parallel to meshHandles
+        std::vector<glm::mat4>        meshTransforms;   // per-mesh toRoot from NifDocument
+        std::vector<MeshSkinBinding>  meshSkinBindings; // per-mesh skin binding, parallel to meshHandles
+        std::vector<MeshMorphBase>    meshMorphBases;   // base positions for morph blending
+        std::map<std::string, float>  morphWeightsCached; // last-applied weights (dirty check)
+        std::string                   loadedNifPath;    // path these handles came from
     };
     std::vector<ActorRenderData> actorCache_;
     int cachedActorCount_   = -1;  // invalidation sentinel
@@ -64,6 +84,7 @@ private:
     // ── Internals ─────────────────────────────────────────────────────────────
     void RebuildActorCache(AppState& state);
     void SyncNifHandles(AppState& state);  // re-uploads if nifPath changed
+    void SyncMorphs(AppState& state);      // applies ARKit blend-shape weights to face meshes
     void EvaluatePoses(AppState& state);
     void FrameAll();
 };

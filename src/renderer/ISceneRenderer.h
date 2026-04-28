@@ -55,8 +55,14 @@ struct ISceneRenderer {
     // ── GPU resource management ───────────────────────────────────────────────
     virtual MeshHandle    UploadMesh  (const MeshData& data)                  = 0;
     virtual void          FreeMesh   (MeshHandle handle)                      = 0;
-    virtual TextureHandle LoadTexture (const std::string& path)               = 0;
-    virtual void          FreeTexture (TextureHandle handle)                  = 0;
+    // Overwrite the position buffer of an already-uploaded mesh in-place.
+    // `positions` must be the same length as the original upload.  Used for
+    // CPU-side morph blending (face ARKit blend shapes).
+    virtual void          UpdateMeshPositions(MeshHandle handle,
+                                              std::span<const glm::vec3> positions) = 0;
+    virtual TextureHandle LoadTexture          (const std::string& path)               = 0;
+    virtual TextureHandle LoadTextureFromMemory(const std::vector<uint8_t>& bytes)     = 0;
+    virtual void          FreeTexture          (TextureHandle handle)                  = 0;
 
     // ── Draw calls ────────────────────────────────────────────────────────────
     virtual void DrawGrid(float cellSize = 1.f, int halfExtent = 10)          = 0;

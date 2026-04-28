@@ -1,23 +1,17 @@
 #include "NifDocument.h"
 #include "NifFile.hpp"
 #include <cstdio>
+#include <cstring>
+#include <sstream>
 #include <unordered_map>
 
-NifDocument LoadNifDocument(const std::string& path)
+// ── Shared parse logic ────────────────────────────────────────────────────────
+// Caller is responsible for loading `nif`; debugPath is used only for logging.
+
+static NifDocument ParseNifFile(nifly::NifFile& nif, const std::string& debugPath)
 {
     NifDocument doc;
-    doc.path = path;
-
-    nifly::NifFile nif;
-    try {
-        if (nif.Load(path) != 0) {
-            fprintf(stderr, "[NifDoc] Load('%s') failed\n", path.c_str());
-            return doc;
-        }
-    } catch (...) {
-        fprintf(stderr, "[NifDoc] Load('%s') threw\n", path.c_str());
-        return doc;
-    }
+    doc.path = debugPath;
 
     // Map nifly block ID → our block index.
     std::unordered_map<uint32_t, int> nifIdToIdx;
@@ -145,6 +139,51 @@ NifDocument LoadNifDocument(const std::string& path)
             ds.meshData.indices.push_back(t.p3);
         }
 
+        // ── Skin binding (BSTriShape + BSSkin::Instance) ─────────────────────
+        if (shape->IsSkinned()) {
+            std::vector<std::string> boneNames;
+            nif.GetShapeBoneList(shape, boneNames);
+            const int numSkinBones = (int)boneNames.size();
+
+            if (numSkinBones > 0) {
+                ds.isSkinned = true;
+                ds.skinBindings.resize(numSkinBones);
+
+                for (int j = 0; j < numSkinBones; j++) {
+                    ds.skinBindings[j].boneName = boneNames[j];
+                    nifly::MatTransform xform;
+                    if (nif.GetShapeTransformSkinToBone(shape, (uint32_t)j, xform))
+                        ds.skinBindings[j].inverseBindMatrix = xform.ToGLMMatrix<glm::mat4>();
+                    // else keep identity
+                }
+
+                // Per-vertex bone indices and weights.
+                // Accumulate from per-bone weight maps into per-vertex slots (max 4).
+                const int numVerts = (int)ds.meshData.positions.size();
+                ds.meshData.boneIndices.assign(numVerts, glm::u8vec4(0));
+                ds.meshData.boneWeights.assign(numVerts, glm::vec4(0.f));
+
+                // Track how many influences have been written per vertex.
+                std::vector<int> slotUsed(numVerts, 0);
+
+                for (int j = 0; j < numSkinBones; j++) {
+                    std::unordered_map<uint16_t, float> weightsMap;
+                    nif.GetShapeBoneWeights(shape, (uint32_t)j, weightsMap);
+                    for (const auto& [vi, wt] : weightsMap) {
+                        if (vi >= (uint16_t)numVerts) continue;
+                        const int slot = slotUsed[vi];
+                        if (slot >= 4) continue;
+                        ds.meshData.boneIndices[vi][slot] = (uint8_t)std::min(j, 255);
+                        ds.meshData.boneWeights[vi][slot] = wt;
+                        slotUsed[vi]++;
+                    }
+                }
+
+                fprintf(stderr, "[NifDoc] '%s' shape '%s': skinned, %d bones\n",
+                        debugPath.c_str(), shape->name.get().c_str(), numSkinBones);
+            }
+        }
+
         doc.shapes.push_back(std::move(ds));
     }
 
@@ -171,22 +210,22 @@ NifDocument LoadNifDocument(const std::string& path)
 
             // Human-readable value for the properties panel.
             char vbuf[128];
-            if (auto* p = dynamic_cast<nifly::BSXFlags*>(ed)) {
-                std::snprintf(vbuf, sizeof(vbuf), "0x%08X", p->integerData);
+            if (auto* pBsx = dynamic_cast<nifly::BSXFlags*>(ed)) {
+                std::snprintf(vbuf, sizeof(vbuf), "0x%08X", pBsx->integerData);
                 b.extraValue = vbuf;
-            } else if (auto* p = dynamic_cast<nifly::BSBehaviorGraphExtraData*>(ed)) {
-                b.extraValue = p->behaviorGraphFile.get();
-            } else if (auto* p = dynamic_cast<nifly::NiStringExtraData*>(ed)) {
-                b.extraValue = p->stringData.get();
-            } else if (auto* p = dynamic_cast<nifly::NiIntegerExtraData*>(ed)) {
-                std::snprintf(vbuf, sizeof(vbuf), "%u", p->integerData);
+            } else if (auto* pBhk = dynamic_cast<nifly::BSBehaviorGraphExtraData*>(ed)) {
+                b.extraValue = pBhk->behaviorGraphFile.get();
+            } else if (auto* pStr = dynamic_cast<nifly::NiStringExtraData*>(ed)) {
+                b.extraValue = pStr->stringData.get();
+            } else if (auto* pInt = dynamic_cast<nifly::NiIntegerExtraData*>(ed)) {
+                std::snprintf(vbuf, sizeof(vbuf), "%u", pInt->integerData);
                 b.extraValue = vbuf;
-            } else if (auto* p = dynamic_cast<nifly::NiFloatExtraData*>(ed)) {
-                std::snprintf(vbuf, sizeof(vbuf), "%.4f", p->floatData);
+            } else if (auto* pFlt = dynamic_cast<nifly::NiFloatExtraData*>(ed)) {
+                std::snprintf(vbuf, sizeof(vbuf), "%.4f", pFlt->floatData);
                 b.extraValue = vbuf;
-            } else if (auto* p = dynamic_cast<nifly::BSInvMarker*>(ed)) {
+            } else if (auto* pInv = dynamic_cast<nifly::BSInvMarker*>(ed)) {
                 std::snprintf(vbuf, sizeof(vbuf), "rot(%u,%u,%u) zoom=%.3f",
-                              p->rotationX, p->rotationY, p->rotationZ, p->zoom);
+                              pInv->rotationX, pInv->rotationY, pInv->rotationZ, pInv->zoom);
                 b.extraValue = vbuf;
             }
 
@@ -201,8 +240,45 @@ NifDocument LoadNifDocument(const std::string& path)
         addExtraData(shapeObjs[si], (int)nodeObjs.size() + si);
 
     fprintf(stderr, "[NifDoc] '%s': %d blocks (%d nodes, %d shapes, %d extra data)\n",
-            path.c_str(), (int)doc.blocks.size(),
+            debugPath.c_str(), (int)doc.blocks.size(),
             (int)nodeObjs.size(), (int)doc.shapes.size(),
             (int)doc.blocks.size() - (int)nodeObjs.size() - (int)doc.shapes.size());
     return doc;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+NifDocument LoadNifDocument(const std::string& path)
+{
+    nifly::NifFile nif;
+    try {
+        if (nif.Load(path) != 0) {
+            fprintf(stderr, "[NifDoc] Load('%s') failed\n", path.c_str());
+            return {};
+        }
+    } catch (...) {
+        fprintf(stderr, "[NifDoc] Load('%s') threw\n", path.c_str());
+        return {};
+    }
+    return ParseNifFile(nif, path);
+}
+
+NifDocument LoadNifDocumentFromBytes(const std::vector<uint8_t>& bytes,
+                                     const std::string& debugPath)
+{
+    if (bytes.empty()) return {};
+    nifly::NifFile nif;
+    try {
+        // std::istringstream doesn't do newline translation, so binary data is safe.
+        std::string buf(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        std::istringstream iss(std::move(buf));
+        if (nif.Load(iss) != 0) {
+            fprintf(stderr, "[NifDoc] Load from bytes failed ('%s')\n", debugPath.c_str());
+            return {};
+        }
+    } catch (...) {
+        fprintf(stderr, "[NifDoc] Load from bytes threw ('%s')\n", debugPath.c_str());
+        return {};
+    }
+    return ParseNifFile(nif, debugPath);
 }

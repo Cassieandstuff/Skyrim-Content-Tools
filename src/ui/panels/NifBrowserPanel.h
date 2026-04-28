@@ -28,5 +28,5 @@ private:
     char               m_filter[128] = {};
 
     void Scan(const std::string& dataFolder);
-    void DrawTree(const std::string& dataFolder);
+    void DrawTree(AppState& state);
 };

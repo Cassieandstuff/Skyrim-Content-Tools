@@ -105,10 +105,27 @@ void TimelinePanel::DrawTransportBar(AppState& state)
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3);
 
-    if (ImGui::Button("|<"))  { state.time = 0.f; state.playing = false; }
+    // |<  step-back  play/pause  step-forward  >|
+    if (ImGui::Button("|<")) { state.time = 0.f; state.playing = false; }
+    ImGui::SameLine(0, 2);
+    if (ImGui::Button("<|")) {
+        state.time    = std::max(0.f, state.time - 1.f / 30.f);
+        state.playing = false;
+    }
     ImGui::SameLine(0, 2);
     if (ImGui::Button(state.playing ? " \xe2\x80\x96 " : "  \xe2\x96\xb6  "))  // ‖ / ▶
         state.playing ^= true;
+    ImGui::SameLine(0, 2);
+    if (ImGui::Button("|>")) {
+        const float seqDur = state.sequence.Duration();
+        const float clipDur = (state.selectedClip >= 0 &&
+                               state.selectedClip < (int)state.clips.size())
+            ? state.clips[state.selectedClip].duration : 0.f;
+        const float maxT = seqDur > 0.f ? seqDur : clipDur;
+        state.time    = state.time + 1.f / 30.f;
+        if (maxT > 0.f) state.time = std::min(state.time, maxT);
+        state.playing = false;
+    }
     ImGui::SameLine(0, 2);
     if (ImGui::Button(">|")) {
         const float dur = state.sequence.Duration();
@@ -128,7 +145,14 @@ void TimelinePanel::DrawTransportBar(AppState& state)
         ImGui::TextDisabled("0.00 s");
 
     ImGui::SameLine(0, 12);
-    ImGui::Checkbox("Loop", &state.loop);
+    // Loop toggle button (highlighted when active).
+    // Capture state BEFORE the click so push/pop are always balanced.
+    const bool loopWas = state.loop;
+    if (loopWas)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.38f, 0.65f, 1.f));
+    if (ImGui::Button("LOOP")) state.loop ^= true;
+    if (loopWas)
+        ImGui::PopStyleColor();
 
     // Zoom controls on the right
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 110.f + ImGui::GetCursorPosX() - 4.f);
@@ -195,7 +219,7 @@ void TimelinePanel::DrawTrackArea(AppState& state, float trackX, float trackW,
     if (state.sequence.actorTracks.empty() && state.sequence.sceneTracks.empty()) {
         // Empty state hint
         const char* msg = state.actors.empty()
-            ? "Load a skeleton via the Viewport to add an actor"
+            ? "Add actors from the Workflow tab, then drag clips here"
             : "Actor added — drag a clip from the Bin to place it";
         ImVec2 ts = ImGui::CalcTextSize(msg);
         dl->AddText({trackX + (trackW - ts.x) * 0.5f, areaY + (areaH - ts.y) * 0.5f},
@@ -315,7 +339,7 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
                 if (actorIdx >= 0 && actorIdx < (int)state.actors.size()) {
                     const int ci = state.actors[actorIdx].castIndex;
                     if (ci >= 0 && ci < (int)state.cast.size())
-                        actorType = state.cast[ci].skeletonType;
+                        actorType = state.cast[ci].creatureType;
                 }
                 const bool typeOk = clipType.empty() || actorType.empty() || clipType == actorType;
 
@@ -423,7 +447,7 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
             if (actorIdx >= 0 && actorIdx < (int)state.actors.size()) {
                 const int ci = state.actors[actorIdx].castIndex;
                 if (ci >= 0 && ci < (int)state.cast.size())
-                    actorType2 = state.cast[ci].skeletonType;
+                    actorType2 = state.cast[ci].creatureType;
             }
             const bool typeOk = clipType.empty() || actorType2.empty() || clipType == actorType2;
             if (dci >= 0 && dci < (int)state.clips.size() && typeOk) {
@@ -686,8 +710,8 @@ void TimelinePanel::HandleDrop(AppState& state, int clipIdx, ImVec2 dropPos,
             lc.actorIdx < (int)state.actors.size()) {
             const int ci = state.actors[lc.actorIdx].castIndex;
             if (ci >= 0 && ci < (int)state.cast.size() &&
-                !state.cast[ci].skeletonType.empty() &&
-                state.cast[ci].skeletonType != clip.skeletonType) {
+                !state.cast[ci].creatureType.empty() &&
+                state.cast[ci].creatureType != clip.skeletonType) {
                 return;  // type mismatch — orange feedback already warned the user
             }
         }

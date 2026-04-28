@@ -3,6 +3,7 @@
 #include "Sequence.h"
 #include <imgui.h>
 #include <algorithm>
+#include <cstdio>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -214,10 +215,19 @@ void BinPanel::DrawCastTab(AppState& state)
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.42f, 0.30f, 0.65f, 1.0f));
 
     for (int i = 0; i < (int)state.cast.size(); i++) {
-        const CastEntry& entry = state.cast[i];
+        const ActorDocument& entry = state.cast[i];
+
+        // ● = placed in scene, ○ = cast-only
+        bool placed = false;
+        for (const auto& a : state.actors)
+            if (a.castIndex == i) { placed = true; break; }
 
         bool selected = (state.selectedCast == i);
-        if (ImGui::Selectable(entry.name.empty() ? "(unnamed)" : entry.name.c_str(), selected))
+        char label[256];
+        std::snprintf(label, sizeof(label), "%s %s##cast%d",
+                      placed ? "\xe2\x97\x8f" : "\xe2\x97\x8b",
+                      entry.name.empty() ? "(unnamed)" : entry.name.c_str(), i);
+        if (ImGui::Selectable(label, selected))
             state.selectedCast = i;
 
         if (ImGui::BeginPopupContextItem()) {

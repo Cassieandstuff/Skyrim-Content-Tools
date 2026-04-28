@@ -150,6 +150,7 @@ bool BsaReader::Open(const std::string& path, char* errOut, int errLen)
     }
 
     const bool defaultCompressed = (hdr.archiveFlags & 0x4u) != 0;
+    m_embedFileNames             = (hdr.archiveFlags & 0x100u) != 0;
 
     // ── Folder records ────────────────────────────────────────────────────────
     std::vector<FolderRecord> folders(hdr.folderCount);
@@ -263,9 +264,30 @@ bool BsaReader::Extract(const BsaFileInfo& info,
         return false;
     }
 
+    // When the Embed File Names flag is set (archiveFlags & 0x100), each file's
+    // data block is preceded by a bstring (1-byte length + N bytes, no null)
+    // containing the file path.  Skip it before reading actual data.
+    uint32_t embeddedOverhead = 0;
+    if (m_embedFileNames) {
+        uint8_t nameLen = 0;
+        if (fread(&nameLen, 1, 1, m_file) != 1) {
+            std::snprintf(errOut, errLen, "BSA: failed to read embedded name length for %s",
+                          info.internalPath.c_str());
+            return false;
+        }
+        if (nameLen > 0 && _fseeki64(m_file, nameLen, SEEK_CUR) != 0) {
+            std::snprintf(errOut, errLen, "BSA: failed to skip embedded name for %s",
+                          info.internalPath.c_str());
+            return false;
+        }
+        embeddedOverhead = 1u + nameLen;
+    }
+
+    const uint32_t dataSize = info.rawSize - embeddedOverhead;
+
     if (!info.compressed) {
-        outBuf.resize(info.rawSize);
-        if (fread(outBuf.data(), 1, info.rawSize, m_file) != info.rawSize) {
+        outBuf.resize(dataSize);
+        if (fread(outBuf.data(), 1, dataSize, m_file) != dataSize) {
             std::snprintf(errOut, errLen, "BSA read error for %s", info.internalPath.c_str());
             return false;
         }
@@ -279,7 +301,7 @@ bool BsaReader::Extract(const BsaFileInfo& info,
                       info.internalPath.c_str());
         return false;
     }
-    const uint32_t compSize = info.rawSize - sizeof(uint32_t);
+    const uint32_t compSize = dataSize - sizeof(uint32_t);
 
     std::vector<uint8_t> compBuf(compSize);
     if (fread(compBuf.data(), 1, compSize, m_file) != compSize) {

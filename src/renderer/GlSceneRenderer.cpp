@@ -462,6 +462,18 @@ void GlSceneRenderer::FreeMesh(MeshHandle handle)
     m_meshes.erase(it);
 }
 
+void GlSceneRenderer::UpdateMeshPositions(MeshHandle handle,
+                                           std::span<const glm::vec3> positions)
+{
+    auto it = m_meshes.find(static_cast<uint32_t>(handle));
+    if (it == m_meshes.end()) return;
+    const GpuMesh& gm = it->second;
+    if (positions.empty() || (int)positions.size() != gm.vertexCount) return;
+    glNamedBufferSubData(gm.vboPos, 0,
+                         (GLsizeiptr)(positions.size() * sizeof(glm::vec3)),
+                         positions.data());
+}
+
 TextureHandle GlSceneRenderer::LoadTexture(const std::string& path)
 {
     if (path.empty()) return TextureHandle::Invalid;
@@ -469,6 +481,22 @@ TextureHandle GlSceneRenderer::LoadTexture(const std::string& path)
     unsigned int glTex = DdsLoadGLTexture(path);
     if (!glTex) {
         GlLog("SCT [GL] LoadTexture: failed to load '%s'", path.c_str());
+        return TextureHandle::Invalid;
+    }
+
+    const uint32_t id = m_nextTexId++;
+    m_textures[id] = glTex;
+    return static_cast<TextureHandle>(id);
+}
+
+TextureHandle GlSceneRenderer::LoadTextureFromMemory(const std::vector<uint8_t>& bytes)
+{
+    if (bytes.empty()) return TextureHandle::Invalid;
+
+    unsigned int glTex = DdsLoadGLTextureFromBuffer(bytes.data(), bytes.size());
+    if (!glTex) {
+        GlLog("SCT [GL] LoadTextureFromMemory: failed to upload %zu-byte DDS buffer",
+              bytes.size());
         return TextureHandle::Invalid;
     }
 

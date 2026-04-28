@@ -334,36 +334,155 @@ public static class PluginBridge
 
     private static NpcRecord ToNpcRecord(INpcGetter npc)
     {
-        string? skeletonModelPath = null;
-        string? expressionTriPath = null;
-        string? raceEditorId      = null;
+        string? skeletonModelPath     = null;
+        string? raceEditorId          = null;
+        IRaceGetter? race             = null;
+        var expressionTriPaths        = new List<string>();
+
+        var isFemale = npc.Configuration.Flags.HasFlag(NpcConfiguration.Flag.Female);
+        var bodyParts    = new List<BodyPartEntry>();
+        var headPartNifs = new List<string>();
 
         if (s_linkCache is not null)
         {
             // Race → skeleton NIF path.
-            // C++ converts this to an HKX path via a .nif → .hkx extension swap
-            // and a "meshes\" prefix, then auto-matches against discoveredSkeletons.
-            if (npc.Race.TryResolve(s_linkCache, out var race))
+            if (npc.Race.TryResolve<IRaceGetter>(s_linkCache, out race))
             {
                 raceEditorId      = race.EditorID;
-                var isFemale      = npc.Configuration.Flags.HasFlag(NpcConfiguration.Flag.Female);
                 var skelModel     = isFemale ? race.SkeletalModel?.Female : race.SkeletalModel?.Male;
                 skeletonModelPath = skelModel?.File.GivenPath;
             }
 
-            // Head parts → expression TRI path.
-            foreach (var hpLink in npc.HeadParts)
+            // ── Body parts: WornArmor → Armor → ArmorAddon ────────────────────
+            // NPC_.WornArmor (WNAM) is the equipped skin armor (e.g. SkinNaked).
+            // Its Armature list contains ArmorAddons for each body slot.
+            // Fallback: when the NPC has no WornArmor (e.g. the Player), use
+            // the Race's default skin armor instead.
+            try
             {
-                if (!hpLink.TryResolve(s_linkCache, out var hp)) continue;
-                foreach (var part in hp.Parts)
+                IArmorGetter? armor = null;
+
+                // Primary: NPC's own WornArmor
+                try
                 {
-                    if (part.PartType == Part.PartTypeEnum.Tri)
+                    npc.WornArmor.TryResolve<IArmorGetter>(s_linkCache, out armor);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"[SCT] WornArmor access failed for {npc.FormKey}: {ex.Message}");
+                }
+
+                // Fallback: Race's default skin armor (covers Player and bare-NPC records)
+                if (armor is null && race is not null)
+                {
+                    try { race.Skin.TryResolve<IArmorGetter>(s_linkCache, out armor); }
+                    catch { /* race has no skin — skip */ }
+                }
+
+                if (armor is not null)
+                {
+                    foreach (var aaLink in armor.Armature)
                     {
-                        expressionTriPath = part.FileName?.GivenPath;
-                        break;
+                        if (!aaLink.TryResolve<IArmorAddonGetter>(s_linkCache, out var aa)) continue;
+
+                        var flags = aa.BodyTemplate?.FirstPersonFlags
+                                    ?? default(BipedObjectFlag);
+
+                        // Only care about the three naked-body slots.
+                        string? slot = null;
+                        if      (flags.HasFlag(BipedObjectFlag.Body))  slot = "body";
+                        else if (flags.HasFlag(BipedObjectFlag.Hands)) slot = "hands";
+                        else if (flags.HasFlag(BipedObjectFlag.Feet))  slot = "feet";
+                        if (slot is null) continue;
+
+                        var model   = isFemale ? aa.WorldModel?.Female : aa.WorldModel?.Male;
+                        var rawPath = model?.File.GivenPath;
+                        if (string.IsNullOrEmpty(rawPath)) continue;
+
+                        // Ensure the path is relative to Data root with Meshes\ prefix.
+                        var nifPath = EnsureMeshesPrefix(rawPath);
+                        bodyParts.Add(new BodyPartEntry { Slot = slot, NifPath = nifPath });
                     }
                 }
-                if (expressionTriPath is not null) break;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[SCT] Body part resolve failed for {npc.FormKey}: {ex.Message}");
+            }
+
+            // ── Head parts ─────────────────────────────────────────────────────
+            // 1. Race-default head parts (ears, brows, teeth, mouth, eyes…).
+            //    These carry the primary face expression TRIs (malehead.tri,
+            //    mouthhuman.tri, maleheadbrows.tri, etc.) that MFEE extends.
+            try
+            {
+                var raceHeadData = isFemale ? race?.HeadData?.Female : race?.HeadData?.Male;
+                if (raceHeadData?.HeadParts is { } raceHPs)
+                {
+                    foreach (var hpRef in raceHPs)
+                    {
+                        if (!hpRef.Head.TryResolve<IHeadPartGetter>(s_linkCache, out var hp)) continue;
+
+                        // Head part NIF (for rendering)
+                        var rawPath = hp.Model?.File.GivenPath;
+                        if (!string.IsNullOrEmpty(rawPath))
+                            headPartNifs.Add(EnsureMeshesPrefix(rawPath));
+
+                        // Convention-based TRI: face expression head parts (MaleHead,
+                        // MouthHuman, MaleHeadBrows, etc.) do NOT store their TRI path
+                        // in hp.Parts — the TRI is co-located with the NIF.
+                        var derivedTri = DeriveExpressionTriPath(rawPath);
+                        if (!string.IsNullOrEmpty(derivedTri) &&
+                            !expressionTriPaths.Contains(derivedTri, StringComparer.OrdinalIgnoreCase))
+                            expressionTriPaths.Add(derivedTri);
+
+                        // Explicit TRI sub-records (belt-and-suspenders — catches hair
+                        // morphs and any other parts that do store TRI paths explicitly).
+                        foreach (var part in hp.Parts)
+                        {
+                            if (part.PartType != Part.PartTypeEnum.Tri) continue;
+                            var triPath = part.FileName?.GivenPath;
+                            if (!string.IsNullOrEmpty(triPath) &&
+                                !expressionTriPaths.Contains(triPath, StringComparer.OrdinalIgnoreCase))
+                                expressionTriPaths.Add(triPath);
+                        }
+                    }
+                }
+            }
+            catch { /* partial failure — skip race head parts */ }
+
+            // 2. NPC-chosen head parts (hair, eyes, custom face parts).
+            //    Collect ALL expression TRI paths across all head parts.
+            foreach (var hpLink in npc.HeadParts)
+            {
+                if (!hpLink.TryResolve<IHeadPartGetter>(s_linkCache, out var hp)) continue;
+
+                // Collect every TRI path in this head part's Parts list.
+                foreach (var part in hp.Parts)
+                {
+                    if (part.PartType != Part.PartTypeEnum.Tri) continue;
+                    var triPath = part.FileName?.GivenPath;
+                    if (!string.IsNullOrEmpty(triPath) &&
+                        !expressionTriPaths.Contains(triPath, StringComparer.OrdinalIgnoreCase))
+                        expressionTriPaths.Add(triPath);
+                }
+
+                // Head part NIF (the visible mesh).
+                var rawPath = hp.Model?.File.GivenPath;
+                if (!string.IsNullOrEmpty(rawPath))
+                {
+                    var nifPath = EnsureMeshesPrefix(rawPath);
+                    if (!headPartNifs.Contains(nifPath, StringComparer.OrdinalIgnoreCase))
+                        headPartNifs.Add(nifPath);
+
+                    // Convention-based TRI (catches NPC-override face parts).
+                    var derivedTri = DeriveExpressionTriPath(rawPath);
+                    if (!string.IsNullOrEmpty(derivedTri) &&
+                        !expressionTriPaths.Contains(derivedTri, StringComparer.OrdinalIgnoreCase))
+                        expressionTriPaths.Add(derivedTri);
+                }
             }
         }
 
@@ -373,17 +492,57 @@ public static class PluginBridge
 
         return new NpcRecord
         {
-            FormId            = npc.FormKey.ID,
-            FormKey           = npc.FormKey.ToString(),
-            EditorId          = npc.EditorID,
-            Name              = npc.Name?.String,
-            RaceEditorId      = raceEditorId,
-            IsFemale          = npc.Configuration.Flags.HasFlag(NpcConfiguration.Flag.Female),
-            SkeletonModelPath = skeletonModelPath,
-            ExpressionTriPath = expressionTriPath,
-            FacegenNifPath    = facegenNifPath,
-            PluginSource      = pluginSource,
+            FormId              = npc.FormKey.ID,
+            FormKey             = npc.FormKey.ToString(),
+            EditorId            = npc.EditorID,
+            Name                = npc.Name?.String,
+            RaceEditorId        = raceEditorId,
+            IsFemale            = isFemale,
+            SkeletonModelPath   = skeletonModelPath,
+            ExpressionTriPaths  = [.. expressionTriPaths],
+            FacegenNifPath      = facegenNifPath,
+            PluginSource        = pluginSource,
+            BodyParts           = [.. bodyParts],
+            HeadPartNifs        = [.. headPartNifs],
         };
+    }
+
+    /// <summary>
+    /// Ensures a NIF path stored in a plugin record is relative to the Data
+    /// root and begins with "Meshes\".  Plugin records sometimes omit the
+    /// "Meshes\" prefix (e.g. "Actors\Character\...") so we add it when absent.
+    /// </summary>
+    private static string EnsureMeshesPrefix(string path)
+    {
+        if (path.StartsWith("Meshes\\", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("Meshes/",  StringComparison.OrdinalIgnoreCase))
+            return path;
+        return "Meshes\\" + path;
+    }
+
+    /// <summary>
+    /// Derives an expression TRI path from a head part NIF model path.
+    /// Face expression head parts (MaleHead, MouthHuman, MaleHeadBrows, etc.)
+    /// do NOT store their TRI paths in HDPT Part sub-records — the TRI is
+    /// co-located with the NIF, differing only in extension.
+    ///
+    /// Returns the TRI path WITHOUT the "Meshes\" prefix (matching the MFEE
+    /// ini key convention), or null if the path has no extension.
+    /// </summary>
+    private static string? DeriveExpressionTriPath(string? nifPath)
+    {
+        if (string.IsNullOrEmpty(nifPath)) return null;
+
+        // Strip Meshes\ prefix first so the result matches MFEE ini keys.
+        var rel = nifPath;
+        if (rel.StartsWith("Meshes\\", StringComparison.OrdinalIgnoreCase) ||
+            rel.StartsWith("Meshes/",  StringComparison.OrdinalIgnoreCase))
+            rel = rel.Substring(7);
+
+        var dot = rel.LastIndexOf('.');
+        if (dot < 0) return null;
+
+        return rel.Substring(0, dot) + ".tri";
     }
 
     private static unsafe int WriteJson<T>(T value, byte** outJson, int* outLen)
@@ -400,6 +559,12 @@ public static class PluginBridge
 
     // ── DTOs ──────────────────────────────────────────────────────────────────
 
+    private record BodyPartEntry
+    {
+        public string Slot    { get; init; } = "";   // "body" | "hands" | "feet"
+        public string NifPath { get; init; } = "";   // Data-relative, Meshes\ prefix
+    }
+
     private record NpcRecord
     {
         public uint    FormId            { get; init; }
@@ -410,11 +575,16 @@ public static class PluginBridge
         public bool    IsFemale          { get; init; }
         // Skeleton NIF path from the race record (relative to Data\Meshes\, no prefix).
         // e.g. "Actors\Character\Character Assets\Skeleton.nif"
-        public string? SkeletonModelPath { get; init; }
-        public string? ExpressionTriPath { get; init; }
+        public string? SkeletonModelPath    { get; init; }
+        // All expression TRI paths collected from all head parts (across hp.Parts where PartType==Tri).
+        public string[] ExpressionTriPaths { get; init; } = [];
         // Derived: Meshes/Actors/Character/FaceGenData/FaceGeom/{plugin}/{formId}.nif
-        public string? FacegenNifPath    { get; init; }
+        public string? FacegenNifPath      { get; init; }
         public string? PluginSource      { get; init; }
+        // Body geometry from WornArmor → Armor → ArmorAddon
+        public BodyPartEntry[] BodyParts    { get; init; } = [];
+        // Race-default + NPC-chosen head part NIFs (hair, eyes, mouth, ears…)
+        public string[]        HeadPartNifs { get; init; } = [];
     }
 
     private record NpcCreateRequest

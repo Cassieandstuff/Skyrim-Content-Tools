@@ -1,6 +1,5 @@
 #include "ActorPropertiesPanel.h"
 #include "AppState.h"
-#include "CastEntry.h"
 #include "DotNetHost.h"
 #include <imgui.h>
 #include <cstdio>
@@ -63,11 +62,11 @@ void ActorPropertiesPanel::Draw(AppState& state)
 
 void ActorPropertiesPanel::DrawIdentity(AppState& state, int idx)
 {
-    CastEntry& entry = state.cast[idx];
+    ActorDocument& doc = state.cast[idx];
 
     if (idx != lastSelected_) {
-        std::snprintf(nameEditBuf_,  sizeof(nameEditBuf_),  "%s", entry.name.c_str());
-        std::snprintf(editorIdBuf_,  sizeof(editorIdBuf_),  "%s", entry.editorId.c_str());
+        std::snprintf(nameEditBuf_,  sizeof(nameEditBuf_),  "%s", doc.name.c_str());
+        std::snprintf(editorIdBuf_,  sizeof(editorIdBuf_),  "%s", doc.editorId.c_str());
         lastSelected_ = idx;
         selectedResult_ = -1;
     }
@@ -75,10 +74,10 @@ void ActorPropertiesPanel::DrawIdentity(AppState& state, int idx)
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.85f, 1.f));
     ImGui::SetNextItemWidth(-1.f);
     if (ImGui::InputTextWithHint("##apname", "Name\xe2\x80\xa6", nameEditBuf_, sizeof(nameEditBuf_)))
-        entry.name = nameEditBuf_;
+        doc.name = nameEditBuf_;
     ImGui::SetNextItemWidth(-1.f);
     if (ImGui::InputTextWithHint("##apeid", "EditorID\xe2\x80\xa6", editorIdBuf_, sizeof(editorIdBuf_)))
-        entry.editorId = editorIdBuf_;
+        doc.editorId = editorIdBuf_;
     ImGui::PopStyleColor();
 }
 
@@ -86,33 +85,32 @@ void ActorPropertiesPanel::DrawIdentity(AppState& state, int idx)
 
 void ActorPropertiesPanel::DrawLinkedNpc(AppState& state, int idx)
 {
-    CastEntry& entry = state.cast[idx];
-    if (!entry.npcRecord.has_value()) return;
+    ActorDocument& doc = state.cast[idx];
+    if (!doc.IsLinked()) return;
 
-    const NpcRecord& rec = *entry.npcRecord;
     ImGui::Spacing();
     ImGui::SeparatorText("Linked NPC");
 
-    ImGui::TextDisabled("%-8s %s", "Race:",   rec.raceEditorId.empty()  ? "\xe2\x80\x94" : rec.raceEditorId.c_str());
-    ImGui::TextDisabled("%-8s %s", "Sex:",    rec.isFemale ? "Female" : "Male");
-    ImGui::TextDisabled("%-8s %s", "Source:", rec.pluginSource.empty() ? "\xe2\x80\x94" : rec.pluginSource.c_str());
-    ImGui::TextDisabled("%-8s %08X", "FormID:", rec.formId);
+    ImGui::TextDisabled("%-8s %s", "Race:",   doc.raceEditorId.empty()  ? "\xe2\x80\x94" : doc.raceEditorId.c_str());
+    ImGui::TextDisabled("%-8s %s", "Sex:",    doc.isFemale ? "Female" : "Male");
+    ImGui::TextDisabled("%-8s %s", "Source:", doc.pluginSource.empty() ? "\xe2\x80\x94" : doc.pluginSource.c_str());
+    ImGui::TextDisabled("%-8s %08X", "FormID:", doc.formId);
 
     ImGui::Spacing();
     if (ImGui::SmallButton("Unlink##ap"))
-        entry.npcRecord.reset();
+        doc.Unlink();
 }
 
 // ── Skeleton section ──────────────────────────────────────────────────────────
 
 void ActorPropertiesPanel::DrawSkeletonSection(AppState& state, int idx)
 {
-    CastEntry& entry = state.cast[idx];
+    ActorDocument& doc = state.cast[idx];
 
-    if (entry.skeletonIndex >= 0 && entry.skeletonIndex < (int)state.skeletons.size()) {
-        const auto& skel = state.skeletons[entry.skeletonIndex];
+    if (doc.skeletonIndex >= 0 && doc.skeletonIndex < (int)state.skeletons.size()) {
+        const auto& skel = state.skeletons[doc.skeletonIndex];
         ImGui::TextDisabled("%s  \xe2\x80\xa2  %d bones",
-            entry.skeletonType.empty() ? "unknown" : entry.skeletonType.c_str(),
+            doc.creatureType.empty() ? "unknown" : doc.creatureType.c_str(),
             (int)skel.bones.size());
         ImGui::Spacing();
         if (ImGui::Button("Change Skeleton\xe2\x80\xa6", {-1.f, 0.f})) {
@@ -226,19 +224,19 @@ void ActorPropertiesPanel::DrawSkeletonPickerModal(AppState& state, int idx)
 
 void ActorPropertiesPanel::DrawNifSection(AppState& state, int idx)
 {
-    CastEntry& entry = state.cast[idx];
+    ActorDocument& doc = state.cast[idx];
 
-    if (entry.nifPath.empty()) {
+    if (doc.bodyNifPath.empty()) {
         ImGui::TextDisabled("None");
     } else {
-        std::string fn = std::filesystem::path(entry.nifPath).filename().string();
+        std::string fn = std::filesystem::path(doc.bodyNifPath).filename().string();
         ImGui::TextDisabled("%s", fn.c_str());
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", entry.nifPath.c_str());
+            ImGui::SetTooltip("%s", doc.bodyNifPath.c_str());
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("Browse NIF\xe2\x80\xa6", { entry.nifPath.empty() ? -1.f : -60.f, 0.f })) {
+    if (ImGui::Button("Browse NIF\xe2\x80\xa6", { doc.bodyNifPath.empty() ? -1.f : -60.f, 0.f })) {
 #if defined(_WIN32)
         char buf[512] = {};
         OPENFILENAMEA ofn     = {};
@@ -249,14 +247,14 @@ void ActorPropertiesPanel::DrawNifSection(AppState& state, int idx)
         ofn.Flags             = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
         ofn.lpstrTitle        = "Select Body NIF";
         if (GetOpenFileNameA(&ofn))
-            entry.nifPath = buf;
+            doc.bodyNifPath = buf;
 #endif
     }
 
-    if (!entry.nifPath.empty()) {
+    if (!doc.bodyNifPath.empty()) {
         ImGui::SameLine();
         if (ImGui::Button("Clear##nif"))
-            entry.nifPath.clear();
+            doc.bodyNifPath.clear();
     }
 }
 
@@ -444,16 +442,16 @@ void ActorPropertiesPanel::DrawSearchTab(AppState& state, int idx)
             if (actorIdx >= 0)
                 state.selectedCast = state.actors[actorIdx].castIndex;
         } else {
-            // Assign record to existing cast entry
-            CastEntry& entry = state.cast[idx];
-            entry.npcRecord  = picked;
-            if (entry.name.empty()) {
-                entry.name = picked.name.empty() ? picked.editorId : picked.name;
-                std::snprintf(nameEditBuf_, sizeof(nameEditBuf_), "%s", entry.name.c_str());
+            // Link record to existing actor document
+            state.RelinkActorFromRecord(idx, picked);
+            ActorDocument& doc = state.cast[idx];
+            if (doc.name.empty()) {
+                doc.name = picked.name.empty() ? picked.editorId : picked.name;
+                std::snprintf(nameEditBuf_, sizeof(nameEditBuf_), "%s", doc.name.c_str());
             }
-            if (entry.editorId.empty()) {
-                entry.editorId = picked.editorId;
-                std::snprintf(editorIdBuf_, sizeof(editorIdBuf_), "%s", entry.editorId.c_str());
+            if (doc.editorId.empty()) {
+                doc.editorId = picked.editorId;
+                std::snprintf(editorIdBuf_, sizeof(editorIdBuf_), "%s", doc.editorId.c_str());
             }
         }
     }
@@ -536,12 +534,12 @@ void ActorPropertiesPanel::DrawCreateTab(AppState& state, int idx)
                 if (actorIdx >= 0)
                     state.selectedCast = state.actors[actorIdx].castIndex;
             } else {
-                CastEntry& entry = state.cast[idx];
-                entry.npcRecord  = out;
-                entry.name       = out.name.empty() ? p.name : out.name;
-                entry.editorId   = out.editorId;
-                std::snprintf(nameEditBuf_,  sizeof(nameEditBuf_),  "%s", entry.name.c_str());
-                std::snprintf(editorIdBuf_,  sizeof(editorIdBuf_),  "%s", entry.editorId.c_str());
+                state.RelinkActorFromRecord(idx, out);
+                ActorDocument& doc = state.cast[idx];
+                doc.name     = out.name.empty() ? p.name : out.name;
+                doc.editorId = out.editorId;
+                std::snprintf(nameEditBuf_,  sizeof(nameEditBuf_),  "%s", doc.name.c_str());
+                std::snprintf(editorIdBuf_,  sizeof(editorIdBuf_),  "%s", doc.editorId.c_str());
             }
         }
     }

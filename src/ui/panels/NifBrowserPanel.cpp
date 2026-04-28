@@ -47,7 +47,7 @@ void NifBrowserPanel::Scan(const std::string& dataFolder)
 // Reconstruct a folder hierarchy from flat entry list by tracking the current
 // path prefix and opening/closing TreeNodes as we descend/ascend.
 
-void NifBrowserPanel::DrawTree(const std::string& /*dataFolder*/)
+void NifBrowserPanel::DrawTree(AppState& state)
 {
     char lowerFilter[128];
     size_t flen = strlen(m_filter);
@@ -122,7 +122,7 @@ void NifBrowserPanel::DrawTree(const std::string& /*dataFolder*/)
         if (ImGui::Selectable(fname, sel,
                 ImGuiSelectableFlags_AllowDoubleClick)) {
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-                m_s.LoadFile(e.fullPath);
+                m_s.LoadFile(e.fullPath, state);
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", e.label.c_str());
@@ -164,7 +164,7 @@ void NifBrowserPanel::Draw(AppState& state)
         ImGui::TextDisabled("No .nif files found under meshes/");
     } else {
         ImGui::BeginChild("##niflist", ImVec2(0, 0), false);
-        DrawTree(df);
+        DrawTree(state);
         ImGui::EndChild();
     }
 

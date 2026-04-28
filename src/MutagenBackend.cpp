@@ -17,9 +17,41 @@ static NpcRecord ParseNpcRecord(const json& j)
     r.raceEditorId      = j.value("raceEditorId",      std::string{});
     r.isFemale          = j.value("isFemale",          false);
     r.skeletonModelPath = j.value("skeletonModelPath", std::string{});
-    r.expressionTriPath = j.value("expressionTriPath", std::string{});
     r.facegenNifPath    = j.value("facegenNifPath",    std::string{});
+
+    // expressionTriPaths: new array form.  Fall back to legacy single-string
+    // field if the bridge DLL has not yet been rebuilt.
+    if (j.contains("expressionTriPaths") && j["expressionTriPaths"].is_array()) {
+        for (const auto& tp : j["expressionTriPaths"])
+            if (tp.is_string()) r.expressionTriPaths.push_back(tp.get<std::string>());
+    } else {
+        // Legacy: single expressionTriPath string from older bridge DLL.
+        std::string single = j.value("expressionTriPath", std::string{});
+        if (!single.empty()) r.expressionTriPaths.push_back(std::move(single));
+    }
     r.pluginSource      = j.value("pluginSource",      std::string{});
+
+    // Body parts: [{slot, nifPath}, ...]
+    if (j.contains("bodyParts") && j["bodyParts"].is_array()) {
+        for (const auto& bp : j["bodyParts"]) {
+            NpcBodyPart part;
+            part.slot    = bp.value("slot",    std::string{});
+            part.nifPath = bp.value("nifPath", std::string{});
+            if (!part.slot.empty() && !part.nifPath.empty())
+                r.bodyParts.push_back(std::move(part));
+        }
+    }
+
+    // Head part NIFs: ["Meshes\...", ...]
+    if (j.contains("headPartNifs") && j["headPartNifs"].is_array()) {
+        for (const auto& hp : j["headPartNifs"]) {
+            if (hp.is_string()) {
+                std::string p = hp.get<std::string>();
+                if (!p.empty()) r.headPartNifs.push_back(std::move(p));
+            }
+        }
+    }
+
     return r;
 }
 

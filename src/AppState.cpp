@@ -3,11 +3,13 @@
 #include "HavokSkeleton.h"
 #include "HavokAnimation.h"
 #include "DotNetHost.h"
+#include "MuFeeConfig.h"
 #include "ui/TrackRegistry.h"
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 
 #if defined(_WIN32)
@@ -37,8 +39,19 @@ std::string ExtractCreatureType(const char* path)
     return t;
 }
 
+void AppState::PushToast(std::string msg, ToastLevel level, float duration)
+{
+    toasts.push_back({ std::move(msg), duration, level });
+}
+
 void AppState::Tick(float dt)
 {
+    // Tick toasts
+    for (auto& t : toasts) t.ttl -= dt;
+    toasts.erase(std::remove_if(toasts.begin(), toasts.end(),
+                                [](const Toast& t){ return t.ttl <= 0.f; }),
+                 toasts.end());
+
     if (!playing) return;
 
     // Prefer sequence duration; fall back to selected clip for bin-preview mode.
@@ -68,6 +81,7 @@ void AppState::NewProject()
     selectedClip = -1;
     selectedCast = -1;
     importErr[0] = '\0';
+    toasts.clear();
     projectPath  = "";
     projectName  = "Untitled";
     projectDirty = false;
@@ -153,11 +167,10 @@ int AppState::LoadSkeletonAndAddActor(const char* path, char* errOut, int errLen
     const int skelIdx = static_cast<int>(skeletons.size());
     skeletons.push_back(std::move(sk));
 
-    // Create a matching cast entry.
-    CastEntry entry;
+    // Create a matching actor document.
+    ActorDocument entry;
     entry.name          = std::filesystem::path(path).stem().string();
-    entry.editorId      = "";
-    entry.skeletonType  = ExtractCreatureType(path);
+    entry.creatureType  = ExtractCreatureType(path);
     entry.skeletonIndex = skelIdx;
     const int castIdx   = static_cast<int>(cast.size());
     cast.push_back(std::move(entry));
@@ -268,18 +281,220 @@ void AppState::ScanDataFolder()
                   return a.creatureType < b.creatureType ||
                          (a.creatureType == b.creatureType && a.displayName < b.displayName);
               });
+
+    // ── BSA search list ───────────────────────────────────────────────────────
+    // Priority: plugin-associated BSAs (highest) → ini-listed base-game BSAs.
+    bsaSearchList.clear();
+    std::vector<std::string> seenLow;   // lowercase deduplification set
+
+    auto addBsa = [&](const std::string& bsaPath) {
+        std::string lp = bsaPath;
+        std::transform(lp.begin(), lp.end(), lp.begin(), ::tolower);
+        if (std::find(seenLow.begin(), seenLow.end(), lp) != seenLow.end()) return;
+        seenLow.push_back(lp);
+        bsaSearchList.push_back(bsaPath);
+    };
+
+    // Step 1: Plugin-associated BSAs — e.g. "Dawnguard.esm" → "Dawnguard.bsa",
+    // "Dawnguard - Textures.bsa", …
+    for (const auto& plugin : discoveredPlugins) {
+        std::string stemLow = fs::path(plugin).stem().string();
+        std::transform(stemLow.begin(), stemLow.end(), stemLow.begin(), ::tolower);
+
+        for (const auto& entry : fs::directory_iterator(fs::path(dataFolder), ec)) {
+            if (!entry.is_regular_file()) continue;
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            if (ext != ".bsa") continue;
+
+            std::string bsaStemLow = entry.path().stem().string();
+            std::transform(bsaStemLow.begin(), bsaStemLow.end(), bsaStemLow.begin(), ::tolower);
+
+            // Match: exact stem, or stem followed by ' ', '-', or '_' separator.
+            bool match = (bsaStemLow == stemLow);
+            if (!match && bsaStemLow.size() > stemLow.size() &&
+                bsaStemLow.substr(0, stemLow.size()) == stemLow)
+            {
+                const char sep = bsaStemLow[stemLow.size()];
+                match = (sep == ' ' || sep == '-' || sep == '_');
+            }
+            if (match) addBsa(entry.path().string());
+        }
+    }
+
+    // Step 2: Ini-listed BSAs from Skyrim.ini [Archive] section.
+    auto loadIniListed = [&](const std::string& iniPath) {
+        std::ifstream ini(iniPath);
+        if (!ini) return;
+        bool inArchive = false;
+        std::string line;
+        while (std::getline(ini, line)) {
+            // Trim CR/whitespace.
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ' ||
+                                     line.back() == '\t')) line.pop_back();
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+                line.erase(0, 1);
+            if (line.empty()) continue;
+            if (line[0] == '[') {
+                inArchive = (line == "[Archive]");
+                continue;
+            }
+            if (!inArchive) continue;
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = line.substr(0, eq);
+            while (!key.empty() && (key.back() == ' ' || key.back() == '\t'))
+                key.pop_back();
+            std::string keyLow = key;
+            std::transform(keyLow.begin(), keyLow.end(), keyLow.begin(), ::tolower);
+            if (keyLow != "sresourcearchivelist" && keyLow != "sresourcearchivelist2")
+                continue;
+            std::string val = line.substr(eq + 1);
+            while (!val.empty() && (val.front() == ' ' || val.front() == '\t'))
+                val.erase(0, 1);
+            std::istringstream ss(val);
+            std::string token;
+            while (std::getline(ss, token, ',')) {
+                while (!token.empty() && (token.front() == ' ' || token.front() == '\t'))
+                    token.erase(0, 1);
+                while (!token.empty() && (token.back() == ' ' || token.back() == '\t'))
+                    token.pop_back();
+                if (token.empty()) continue;
+                std::string full = (fs::path(dataFolder) / token).string();
+                if (fs::exists(full, ec)) addBsa(full);
+            }
+        }
+    };
+
+    // Look in standard SSE My Games directory and game install parent.
+    {
+        char* up = nullptr; _dupenv_s(&up, nullptr, "USERPROFILE");
+        if (up) {
+            loadIniListed((fs::path(up) / "Documents" / "My Games" /
+                           "Skyrim Special Edition" / "Skyrim.ini").string());
+            free(up);
+        }
+        loadIniListed((fs::path(dataFolder).parent_path() / "Skyrim.ini").string());
+    }
+
+    fprintf(stderr, "[SCT] ScanDataFolder: %d skeleton(s), %d BSA(s) in search list\n",
+            (int)discoveredSkeletons.size(), (int)bsaSearchList.size());
+    for (int i = 0; i < (int)bsaSearchList.size(); i++)
+        fprintf(stderr, "[SCT]   [%d] %s\n", i,
+                std::filesystem::path(bsaSearchList[i]).filename().string().c_str());
+
+    // ── MFEE (MuFacialExpressionExtended) TRI map ────────────────────────────
+    mfeeExtendedTris.clear();
+    const std::string mfeeIni = (fs::path(dataFolder) /
+        "SKSE" / "plugins" / "MuFacialExpressionExtended" /
+        "performance capture.ini").string();
+    if (fs::exists(mfeeIni, ec))
+        mfeeExtendedTris = LoadMuFeeConfig(mfeeIni);
+    else
+        fprintf(stderr, "[SCT] MFEE ini not found — extended TRI discovery disabled\n");
+}
+
+// ── ResolveAsset ──────────────────────────────────────────────────────────────
+
+bool AppState::ResolveAsset(const std::string& relPath, std::vector<uint8_t>& outBytes) const
+{
+    if (relPath.empty()) return false;
+
+    // Normalise to forward-slash form for loose-file lookup.
+    std::string rel = relPath;
+    for (char& c : rel) if (c == '\\') c = '/';
+
+    // 1. Loose file wins.
+    if (!dataFolder.empty()) {
+        std::string full = dataFolder + "/" + rel;
+        std::ifstream f(full, std::ios::binary);
+        if (f) {
+            outBytes.assign(std::istreambuf_iterator<char>(f),
+                            std::istreambuf_iterator<char>());
+            return true;
+        }
+    }
+
+    // 2. Walk BSA search list (highest priority first).
+    // BSA internal paths: lowercase backslash-separated.
+    std::string bsaKey = rel;
+    for (char& c : bsaKey) if (c == '/') c = '\\';
+    std::transform(bsaKey.begin(), bsaKey.end(), bsaKey.begin(), ::tolower);
+
+    fprintf(stderr, "[ResolveAsset] key='%s'  bsaList=%d\n",
+            bsaKey.c_str(), (int)bsaSearchList.size());
+
+    int bsaChecked = 0;
+    for (const auto& bsaPath : bsaSearchList) {
+        BsaReader bsa;
+        char err[256] = {};
+        if (!bsa.Open(bsaPath, err, sizeof(err))) {
+            fprintf(stderr, "[ResolveAsset]   OPEN FAIL '%s': %s\n",
+                    std::filesystem::path(bsaPath).filename().string().c_str(), err);
+            continue;
+        }
+        ++bsaChecked;
+        const BsaFileInfo* fi = bsa.FindExact(bsaKey);
+        if (!fi) continue;
+        char extractErr[256] = {};
+        if (bsa.Extract(*fi, outBytes, extractErr, sizeof(extractErr))) {
+            fprintf(stderr, "[ResolveAsset]   found in '%s'\n",
+                    std::filesystem::path(bsaPath).filename().string().c_str());
+            return true;
+        }
+        fprintf(stderr, "[ResolveAsset]   extract FAIL in '%s': %s\n",
+                std::filesystem::path(bsaPath).filename().string().c_str(), extractErr);
+    }
+
+    fprintf(stderr, "[ResolveAsset]   MISS after %d BSA(s)\n", bsaChecked);
+    return false;
 }
 
 // ── AddActorFromRecord ────────────────────────────────────────────────────────
 
 int AppState::AddActorFromRecord(const NpcRecord& rec)
 {
-    CastEntry entry;
+    ActorDocument entry;
     entry.name          = rec.name.empty() ? rec.editorId : rec.name;
     entry.editorId      = rec.editorId;
-    entry.skeletonType  = ExtractCreatureType(rec.skeletonModelPath.c_str());
-    entry.skeletonIndex = -1;
-    entry.npcRecord     = rec;
+    entry.formId        = rec.formId;
+    entry.formKey       = rec.formKey;
+    entry.raceEditorId  = rec.raceEditorId;
+    entry.pluginSource  = rec.pluginSource;
+    entry.isFemale      = rec.isFemale;
+    entry.headNifPath          = rec.facegenNifPath;
+    entry.expressionTriPaths   = rec.expressionTriPaths;
+    entry.headTriPath          = rec.expressionTriPaths.empty() ? std::string{} : rec.expressionTriPaths[0];
+    entry.creatureType         = ExtractCreatureType(rec.skeletonModelPath.c_str());
+
+    // Body parts (body/hands/feet) from WornArmor ArmorAddon chain.
+    for (const auto& bp : rec.bodyParts) {
+        if      (bp.slot == "body")  entry.bodyNifPath  = bp.nifPath;
+        else if (bp.slot == "hands") entry.handsNifPath = bp.nifPath;
+        else if (bp.slot == "feet")  entry.feetNifPath  = bp.nifPath;
+    }
+
+    // Race/NPC head parts (hair, eyes, mouth, ears, …)
+    entry.headPartNifs = rec.headPartNifs;
+
+    // ── MFEE: map vanilla TRI paths → extended ARKit TRI paths ───────────────
+    if (!mfeeExtendedTris.empty()) {
+        for (const auto& triPath : entry.expressionTriPaths) {
+            const std::string key = NormalizeMuFeePath(triPath);
+            const auto it = mfeeExtendedTris.find(key);
+            if (it != mfeeExtendedTris.end()) {
+                // Store with "meshes\" prefix for ResolveAsset compatibility.
+                entry.extendedTriPaths.push_back("meshes\\" + it->second);
+            } else {
+                fprintf(stderr, "[SCT] MFEE: no mapping for TRI '%s'\n", triPath.c_str());
+            }
+        }
+        fprintf(stderr, "[SCT] MFEE: %d/%d TRI path(s) mapped for '%s'\n",
+                (int)entry.extendedTriPaths.size(),
+                (int)entry.expressionTriPaths.size(),
+                rec.editorId.c_str());
+    }
+
     const int castIdx   = static_cast<int>(cast.size());
     cast.push_back(std::move(entry));
 
@@ -295,6 +510,15 @@ int AppState::AddActorFromRecord(const NpcRecord& rec)
     // "Actors\Character\Character Assets\Skeleton.nif".
     // Convert to lowercase BSA internal HKX path and match against
     // discoveredSkeletons (populated by ScanDataFolder).
+    const ActorDocument& stored = cast[castIdx];
+    fprintf(stderr, "[SCT] AddActorFromRecord '%s': body='%s' hands='%s' feet='%s' head='%s' "
+            "headParts=%d triPaths=%d extendedTris=%d\n",
+            rec.editorId.c_str(),
+            stored.bodyNifPath.c_str(), stored.handsNifPath.c_str(),
+            stored.feetNifPath.c_str(), stored.headNifPath.c_str(),
+            (int)stored.headPartNifs.size(),
+            (int)stored.expressionTriPaths.size(),
+            (int)stored.extendedTriPaths.size());
     fprintf(stderr, "[SCT] AddActorFromRecord '%s': skeletonModelPath='%s'  discoveredSkeletons=%d\n",
             rec.editorId.c_str(), rec.skeletonModelPath.c_str(), (int)discoveredSkeletons.size());
 
@@ -350,6 +574,72 @@ int AppState::AddActorFromRecord(const NpcRecord& rec)
     return actorIdx;
 }
 
+// ── RelinkActorFromRecord ──────────────────────────────────────────────────────
+
+void AppState::RelinkActorFromRecord(int castIdx, const NpcRecord& rec)
+{
+    if (castIdx < 0 || castIdx >= (int)cast.size()) return;
+    ActorDocument& doc = cast[castIdx];
+
+    // Identity
+    doc.formId       = rec.formId;
+    doc.formKey      = rec.formKey;
+    doc.raceEditorId = rec.raceEditorId;
+    doc.pluginSource = rec.pluginSource;
+    doc.isFemale     = rec.isFemale;
+
+    // Asset cache
+    doc.headNifPath        = rec.facegenNifPath;
+    doc.expressionTriPaths = rec.expressionTriPaths;
+    doc.headTriPath        = rec.expressionTriPaths.empty()
+                             ? std::string{} : rec.expressionTriPaths[0];
+
+    // MFEE mapping
+    doc.extendedTriPaths.clear();
+    if (!mfeeExtendedTris.empty()) {
+        for (const auto& tp : doc.expressionTriPaths) {
+            const auto it = mfeeExtendedTris.find(NormalizeMuFeePath(tp));
+            if (it != mfeeExtendedTris.end())
+                doc.extendedTriPaths.push_back("meshes\\" + it->second);
+        }
+    }
+
+    // Reset lazy TRI cache so it reloads on next Inspector draw
+    doc.triDocs.clear();
+    doc.triDocsLoaded = false;
+
+    projectDirty = true;
+}
+
+// ── RemapMfeeForActor ──────────────────────────────────────────────────────────
+
+void AppState::RemapMfeeForActor(int castIdx)
+{
+    if (castIdx < 0 || castIdx >= (int)cast.size()) return;
+    ActorDocument& doc = cast[castIdx];
+    if (doc.expressionTriPaths.empty()) return;
+
+    doc.extendedTriPaths.clear();
+    doc.triDocs.clear();
+    doc.triDocsLoaded = false;
+
+    if (!mfeeExtendedTris.empty()) {
+        for (const auto& tp : doc.expressionTriPaths) {
+            const auto it = mfeeExtendedTris.find(NormalizeMuFeePath(tp));
+            if (it != mfeeExtendedTris.end())
+                doc.extendedTriPaths.push_back("meshes\\" + it->second);
+            else
+                fprintf(stderr, "[SCT] RemapMfee: no mapping for '%s'\n", tp.c_str());
+        }
+        fprintf(stderr, "[SCT] RemapMfee castIdx=%d: %d/%d mapped\n",
+                castIdx, (int)doc.extendedTriPaths.size(),
+                (int)doc.expressionTriPaths.size());
+    } else {
+        fprintf(stderr, "[SCT] RemapMfee: mfeeExtendedTris is empty — run ScanDataFolder first\n");
+    }
+    projectDirty = true;
+}
+
 // ── AssignSkeletonToCast ──────────────────────────────────────────────────────
 
 bool AppState::AssignSkeletonToCast(int castIdx, const DiscoveredSkeleton& ds,
@@ -385,7 +675,7 @@ bool AppState::AssignSkeletonToCast(int castIdx, const DiscoveredSkeleton& ds,
         GetTempPathA(sizeof(tempDir), tempDir);
         const std::string tmpPath = std::string(tempDir) + "sct_skel_tmp.hkx";
 
-        FILE* tf = fopen(tmpPath.c_str(), "wb");
+        FILE* tf = nullptr; fopen_s(&tf, tmpPath.c_str(), "wb");
         if (!tf) {
             std::snprintf(errOut, errLen, "Cannot write temp file: %s", tmpPath.c_str());
             return false;
@@ -423,10 +713,10 @@ bool AppState::AssignSkeletonToCast(int castIdx, const DiscoveredSkeleton& ds,
 
     const int skelIdx            = static_cast<int>(skeletons.size());
     skeletons.push_back(std::move(sk));
-    cast[castIdx].skeletonIndex    = skelIdx;
-    cast[castIdx].skeletonType     = ds.creatureType;
-    cast[castIdx].skeletonPath     = ds.path;
-    cast[castIdx].skeletonInternal = ds.bsaInternal;
+    cast[castIdx].skeletonIndex       = skelIdx;
+    cast[castIdx].creatureType        = ds.creatureType;
+    cast[castIdx].skeletonHkxPath     = ds.path;
+    cast[castIdx].skeletonHkxInternal = ds.bsaInternal;
     return true;
 }
 

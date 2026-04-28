@@ -27,10 +27,13 @@ public:
     void        EndFrame() override;
     ImTextureID GetOutputTexture() const override;
 
-    MeshHandle    UploadMesh  (const MeshData& data) override;
-    void          FreeMesh   (MeshHandle handle) override;
-    TextureHandle LoadTexture (const std::string& path) override;
-    void          FreeTexture (TextureHandle handle) override;
+    MeshHandle    UploadMesh           (const MeshData& data) override;
+    void          FreeMesh            (MeshHandle handle) override;
+    void          UpdateMeshPositions (MeshHandle handle,
+                                       std::span<const glm::vec3> positions) override;
+    TextureHandle LoadTexture         (const std::string& path) override;
+    TextureHandle LoadTextureFromMemory(const std::vector<uint8_t>& bytes) override;
+    void          FreeTexture         (TextureHandle handle) override;
 
     void DrawGrid(float cellSize, int halfExtent) override;
     void DrawSkeleton(const Skeleton& skel, const Pose& pose,

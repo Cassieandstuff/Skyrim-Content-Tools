@@ -1,6 +1,6 @@
 #pragma once
 #include "Sequence.h"
-#include "CastEntry.h"
+#include "ActorDocument.h"
 #include <functional>
 #include <vector>
 #include <imgui.h>
@@ -22,7 +22,7 @@ struct TrackTypeDef {
 
     // Optional: return false to hide this lane for a particular cast entry.
     // nullptr = always show.
-    std::function<bool(const CastEntry&)> isCompatible;
+    std::function<bool(const ActorDocument&)> isCompatible;
 
     // Evaluate all active items in this lane at sequence time t and write the
     // result into eval.  nullptr = scaffolded / not yet implemented (no-op).

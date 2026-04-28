@@ -18,13 +18,24 @@ struct NifBlock {
     std::string      extraValue;          // human-readable value for extra data blocks
 };
 
+// One entry in a shape's skin binding: name of the skeleton bone and its
+// inverse-bind matrix (skin-to-bone transform in NIF/Havok Z-up space).
+struct SkinBoneBinding {
+    std::string boneName;
+    glm::mat4   inverseBindMatrix{ 1.f }; // NIF skin space → bone local space
+};
+
 // Geometry for one renderable shape.
 // Vertex positions are stored in LOCAL shape space.
-// To render: apply block.toRoot (NIF root space), then kNifToWorld (world space).
+// To render static:  apply block.toRoot then kNifToWorld.
+// To render skinned: model = identity; pass skinMats to DrawSkinnedMesh.
 struct NifDocShape {
     int         blockIndex;   // → NifDocument::blocks[blockIndex]
-    MeshData    meshData;
+    MeshData    meshData;     // boneIndices/boneWeights filled iff isSkinned
     std::string diffusePath;  // relative texture path, e.g. "textures/actors/…_d.dds"
+
+    bool                         isSkinned = false;
+    std::vector<SkinBoneBinding> skinBindings; // indexed by skin-local bone index
 };
 
 struct NifDocument {
@@ -37,3 +48,5 @@ struct NifDocument {
 };
 
 NifDocument LoadNifDocument(const std::string& path);
+NifDocument LoadNifDocumentFromBytes(const std::vector<uint8_t>& bytes,
+                                     const std::string& debugPath = {});

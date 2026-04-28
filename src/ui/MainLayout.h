@@ -6,7 +6,8 @@
 #include "renderer/GlSceneRenderer.h"
 #include "panels/ViewportPanel.h"
 #include "panels/ClipBinPanel.h"
-#include "panels/ActorPropertiesPanel.h"
+#include "panels/InspectorPanel.h"
+#include "panels/PluginBrowserPanel.h"
 #include "panels/TimelinePanel.h"
 #include "panels/SceneGraphPanel.h"
 #include "panels/AnimatorPanel.h"
@@ -30,21 +31,20 @@ private:
     // ── State ─────────────────────────────────────────────────────────────────
     AppState    m_state;
     const char* m_status           = "Ready";
-    bool        m_layoutInitialized[3] = {};  // one per AppTab
+    bool        m_layoutInitialized[4] = {};  // one per AppTab
     bool        m_wantQuit         = false;
 
-    // ── Renderers (must be declared before the viewports that reference them) ──
-    GlSceneRenderer m_sceneRenderer;
-    GlSceneRenderer m_animRenderer;
-    GlSceneRenderer m_nifRenderer;
+    // ── Renderer (must be declared before any panel that holds a reference to it) ──
+    GlSceneRenderer m_renderer;
 
     // ── Panel instances (owned here, registered as non-owning ptrs) ───────────
     // Scene Editor tab
     BinPanel             m_bin;
-    ActorPropertiesPanel m_actorProps;
+    PluginBrowserPanel   m_pluginBrowser;
     SceneGraphPanel      m_sceneGraph;
     ViewportPanel        m_sceneViewport;
     TimelinePanel        m_timeline;
+    InspectorPanel       m_inspector;
     // Anim Editor tab
     ViewportPanel        m_animViewport;
 
@@ -61,6 +61,7 @@ private:
     // ── Layout helpers ────────────────────────────────────────────────────────
     void DrawMenuBar();
     void DrawStatusBar();
+    void DrawToasts();
     void SetupDefaultLayout(ImGuiID dockspaceId, AppTab tab);
 
     // ── File operations ───────────────────────────────────────────────────────

@@ -9,40 +9,6 @@
 
 using json = nlohmann::json;
 
-// ── NpcRecord helpers ─────────────────────────────────────────────────────────
-
-static json SerializeNpcRecord(const NpcRecord& r)
-{
-    return {
-        {"formId",            r.formId},
-        {"formKey",           r.formKey},
-        {"editorId",          r.editorId},
-        {"name",              r.name},
-        {"raceEditorId",      r.raceEditorId},
-        {"isFemale",          r.isFemale},
-        {"skeletonModelPath", r.skeletonModelPath},
-        {"expressionTriPath", r.expressionTriPath},
-        {"facegenNifPath",    r.facegenNifPath},
-        {"pluginSource",      r.pluginSource},
-    };
-}
-
-static NpcRecord DeserializeNpcRecord(const json& j)
-{
-    NpcRecord r;
-    r.formId            = j.value("formId",            0u);
-    r.formKey           = j.value("formKey",           std::string{});
-    r.editorId          = j.value("editorId",          std::string{});
-    r.name              = j.value("name",              std::string{});
-    r.raceEditorId      = j.value("raceEditorId",      std::string{});
-    r.isFemale          = j.value("isFemale",          false);
-    r.skeletonModelPath = j.value("skeletonModelPath", std::string{});
-    r.expressionTriPath = j.value("expressionTriPath", std::string{});
-    r.facegenNifPath    = j.value("facegenNifPath",    std::string{});
-    r.pluginSource      = j.value("pluginSource",      std::string{});
-    return r;
-}
-
 // ── TrackType helpers ─────────────────────────────────────────────────────────
 
 static const char* TrackTypeName(TrackType t)
@@ -109,17 +75,49 @@ bool ProjectFile::Save(const std::string& path, const AppState& state,
         jClips.push_back({{"path", c.sourcePath}});
     root["clips"] = std::move(jClips);
 
-    // Cast entries
+    // Cast entries (ActorDocument)
     json jCast = json::array();
-    for (const auto& ce : state.cast) {
+    for (const auto& doc : state.cast) {
         json entry;
-        entry["name"]         = ce.name;
-        entry["editorId"]     = ce.editorId;
-        entry["skeletonType"] = ce.skeletonType;
-        entry["skeleton"]     = {{"path",     ce.skeletonPath},
-                                  {"internal", ce.skeletonInternal}};
-        if (ce.npcRecord)
-            entry["npcRecord"] = SerializeNpcRecord(*ce.npcRecord);
+        // Identity
+        entry["name"]        = doc.name;
+        entry["editorId"]    = doc.editorId;
+        entry["formId"]      = doc.formId;
+        entry["formKey"]     = doc.formKey;
+        entry["raceEditorId"]= doc.raceEditorId;
+        entry["pluginSource"]= doc.pluginSource;
+        entry["isFemale"]    = doc.isFemale;
+        // Asset cache
+        entry["creatureType"]= doc.creatureType;
+        entry["skeleton"]    = {{"hkxPath",     doc.skeletonHkxPath},
+                                 {"hkxInternal", doc.skeletonHkxInternal}};
+        entry["bodyNifPath"]  = doc.bodyNifPath;
+        entry["handsNifPath"] = doc.handsNifPath;
+        entry["feetNifPath"]  = doc.feetNifPath;
+        entry["headNifPath"]  = doc.headNifPath;
+        entry["headTriPath"]  = doc.headTriPath;
+        if (!doc.headPartNifs.empty()) {
+            json jHPNifs = json::array();
+            for (const auto& hp : doc.headPartNifs) jHPNifs.push_back(hp);
+            entry["headPartNifs"] = std::move(jHPNifs);
+        }
+        if (!doc.expressionTriPaths.empty()) {
+            json jTriPaths = json::array();
+            for (const auto& tp : doc.expressionTriPaths) jTriPaths.push_back(tp);
+            entry["expressionTriPaths"] = std::move(jTriPaths);
+        }
+        if (!doc.extendedTriPaths.empty()) {
+            json jExt = json::array();
+            for (const auto& ep : doc.extendedTriPaths) jExt.push_back(ep);
+            entry["extendedTriPaths"] = std::move(jExt);
+        }
+        // Authored overrides
+        if (!doc.morphWeights.empty()) {
+            json jMorphs = json::object();
+            for (const auto& [k, v] : doc.morphWeights)
+                jMorphs[k] = v;
+            entry["morphWeights"] = std::move(jMorphs);
+        }
         jCast.push_back(std::move(entry));
     }
     root["cast"] = std::move(jCast);
@@ -228,25 +226,75 @@ bool ProjectFile::Load(const std::string& path, AppState& state,
         }
     }
 
-    // ── Cast entries ──────────────────────────────────────────────────────────
+    // ── Cast entries (ActorDocument) ──────────────────────────────────────────
     if (root.contains("cast")) {
         for (const auto& jce : root["cast"]) {
-            CastEntry ce;
-            ce.name         = jce.value("name",         std::string{});
-            ce.editorId     = jce.value("editorId",     std::string{});
-            ce.skeletonType = jce.value("skeletonType", std::string{});
-            if (jce.contains("npcRecord"))
-                ce.npcRecord = DeserializeNpcRecord(jce["npcRecord"]);
+            ActorDocument doc;
+            // Identity
+            doc.name         = jce.value("name",         std::string{});
+            doc.editorId     = jce.value("editorId",     std::string{});
+            doc.formId       = jce.value("formId",       0u);
+            doc.formKey      = jce.value("formKey",      std::string{});
+            doc.raceEditorId = jce.value("raceEditorId", std::string{});
+            doc.pluginSource = jce.value("pluginSource", std::string{});
+            doc.isFemale     = jce.value("isFemale",     false);
+            // Asset cache
+            doc.creatureType = jce.value("creatureType", std::string{});
+            doc.bodyNifPath  = jce.value("bodyNifPath",  std::string{});
+            doc.handsNifPath = jce.value("handsNifPath", std::string{});
+            doc.feetNifPath  = jce.value("feetNifPath",  std::string{});
+            doc.headNifPath  = jce.value("headNifPath",  std::string{});
+            doc.headTriPath  = jce.value("headTriPath",  std::string{});
+            if (jce.contains("headPartNifs") && jce["headPartNifs"].is_array())
+                for (const auto& hp : jce["headPartNifs"])
+                    if (hp.is_string()) doc.headPartNifs.push_back(hp.get<std::string>());
+
+            // Expression TRI paths — array form (new); fall back to single headTriPath (legacy).
+            if (jce.contains("expressionTriPaths") && jce["expressionTriPaths"].is_array()) {
+                for (const auto& tp : jce["expressionTriPaths"])
+                    if (tp.is_string()) doc.expressionTriPaths.push_back(tp.get<std::string>());
+            } else if (!doc.headTriPath.empty()) {
+                doc.expressionTriPaths.push_back(doc.headTriPath);
+            }
+            if (jce.contains("extendedTriPaths") && jce["extendedTriPaths"].is_array()) {
+                for (const auto& ep : jce["extendedTriPaths"])
+                    if (ep.is_string()) doc.extendedTriPaths.push_back(ep.get<std::string>());
+            }
+            // Legacy key fallback
+            if (doc.creatureType.empty())
+                doc.creatureType = jce.value("skeletonType", std::string{});
 
             // Skeleton ref
             std::string skelPath, skelInternal;
             if (jce.contains("skeleton")) {
-                skelPath     = jce["skeleton"].value("path",     std::string{});
-                skelInternal = jce["skeleton"].value("internal", std::string{});
+                const auto& js = jce["skeleton"];
+                skelPath     = js.value("hkxPath",     std::string{});
+                skelInternal = js.value("hkxInternal", std::string{});
+                // Legacy key fallback
+                if (skelPath.empty())     skelPath     = js.value("path",     std::string{});
+                if (skelInternal.empty()) skelInternal = js.value("internal", std::string{});
+            }
+
+            // Authored overrides
+            if (jce.contains("morphWeights")) {
+                for (const auto& [k, v] : jce["morphWeights"].items())
+                    doc.morphWeights[k] = v.get<float>();
+            }
+
+            // Legacy: old format embedded full NpcRecord; promote fields if missing
+            if (jce.contains("npcRecord")) {
+                const auto& jn = jce["npcRecord"];
+                if (doc.formId == 0)          doc.formId       = jn.value("formId",            0u);
+                if (doc.formKey.empty())      doc.formKey      = jn.value("formKey",            std::string{});
+                if (doc.raceEditorId.empty()) doc.raceEditorId = jn.value("raceEditorId",       std::string{});
+                if (doc.pluginSource.empty()) doc.pluginSource = jn.value("pluginSource",       std::string{});
+                if (!doc.isFemale)            doc.isFemale     = jn.value("isFemale",           false);
+                if (doc.headNifPath.empty())  doc.headNifPath  = jn.value("facegenNifPath",     std::string{});
+                if (doc.headTriPath.empty())  doc.headTriPath  = jn.value("expressionTriPath",  std::string{});
             }
 
             const int castIdx = static_cast<int>(state.cast.size());
-            state.cast.push_back(std::move(ce));
+            state.cast.push_back(std::move(doc));
 
             if (!skelPath.empty()) {
                 for (const auto& ds : state.discoveredSkeletons) {

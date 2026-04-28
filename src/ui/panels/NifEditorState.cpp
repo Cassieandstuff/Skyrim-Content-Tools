@@ -1,4 +1,5 @@
 #include "NifEditorState.h"
+#include "AppState.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <cfloat>
 
@@ -29,7 +30,7 @@ void NifEditorState::FreeHandles()
     textures.clear();
 }
 
-void NifEditorState::LoadFile(const std::string& path)
+void NifEditorState::LoadFile(const std::string& path, const AppState& state)
 {
     FreeHandles();
     doc           = LoadNifDocument(path);
@@ -40,9 +41,10 @@ void NifEditorState::LoadFile(const std::string& path)
         handles.push_back(renderer.UploadMesh(ds.meshData));
 
         TextureHandle th = TextureHandle::Invalid;
-        if (dataFolder && !ds.diffusePath.empty()) {
-            const std::string fullPath = *dataFolder + "/" + ds.diffusePath;
-            th = renderer.LoadTexture(fullPath);
+        if (!ds.diffusePath.empty()) {
+            std::vector<uint8_t> texBytes;
+            if (state.ResolveAsset(ds.diffusePath, texBytes))
+                th = renderer.LoadTextureFromMemory(texBytes);
         }
         textures.push_back(th);
     }
