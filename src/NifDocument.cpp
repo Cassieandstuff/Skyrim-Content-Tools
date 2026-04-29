@@ -1,5 +1,7 @@
 #include "NifDocument.h"
+#include "NifAnim.h"
 #include "NifFile.hpp"
+#include "Animation.hpp"
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -195,17 +197,60 @@ static NifDocument ParseNifFile(nifly::NifFile& nif, const std::string& debugPat
         //   bits 5-8   : dst blend factor  (0 = ONE, 7 = ONE_MINUS_SRC_ALPHA)
         //   bit 9      : alpha test enable
         // Additive: blend enable + dst == 0 (ONE).
+        // NifSkope treats blendOn and testOn as independent booleans — both can be
+        // active simultaneously.  Use independent if-statements (not else-if).
         if (auto* ap = nif.GetAlphaProperty(shape)) {
             const uint16_t fl  = ap->flags;
             const bool blendOn = (fl & 0x0001) != 0;
             const bool testOn  = (fl & 0x0200) != 0;
-            if (blendOn) {
+
+            if (testOn) {
+                ds.alphaThreshold = ap->threshold / 255.f;
+            }
+
+            if (blendOn && testOn) {
+                const int dst = (fl >> 5) & 0xF;
+                // Additive+test is unusual; treat as AlphaTestAndBlend regardless.
+                ds.alphaMode = (dst == 0) ? NifAlphaMode::Additive
+                                           : NifAlphaMode::AlphaTestAndBlend;
+            } else if (blendOn) {
                 const int dst = (fl >> 5) & 0xF;
                 ds.alphaMode = (dst == 0) ? NifAlphaMode::Additive
                                            : NifAlphaMode::AlphaBlend;
             } else if (testOn) {
-                ds.alphaMode      = NifAlphaMode::AlphaTest;
-                ds.alphaThreshold = ap->threshold / 255.f;
+                ds.alphaMode = NifAlphaMode::AlphaTest;
+            }
+        }
+
+        // ── Parent chain for animated transform recomposition ────────────────
+        // Walk up from the shape's direct parent, collecting (name, restLocal)
+        // pairs in inside-out order (direct parent first, root last-excluded).
+        // Mirrors the computeToRoot exclusion: the NIF root node's own transform
+        // is skipped because REFR placement replaces it.
+        ds.shapeLocal = shape->transform.ToGLMMatrix<glm::mat4>();
+        {
+            nifly::NiNode* cur = nif.GetParentNode(shape);
+            while (cur) {
+                nifly::NiNode* gp = nif.GetParentNode(cur);
+                if (!gp) break; // cur is the root — excluded
+                ds.parentChain.emplace_back(cur->name.get(),
+                                            cur->transform.ToGLMMatrix<glm::mat4>());
+                cur = gp;
+            }
+        }
+
+        // ── Vertex morph animation (NiGeomMorpherController on this shape) ──────
+        {
+            nifly::NiTimeController* ctrl =
+                nif.GetHeader().GetBlock<nifly::NiTimeController>(shape->controllerRef);
+            while (ctrl) {
+                if (auto* gmc = dynamic_cast<nifly::NiGeomMorpherController*>(ctrl)) {
+                    ds.morphAnim = ParseNifShapeMorph(nif, *gmc,
+                                       (uint32_t)ds.meshData.positions.size());
+                    break;
+                }
+                ctrl = nif.GetHeader().GetBlock<nifly::NiTimeController>(
+                    ctrl->nextControllerRef);
             }
         }
 
@@ -268,6 +313,10 @@ static NifDocument ParseNifFile(nifly::NifFile& nif, const std::string& debugPat
             debugPath.c_str(), (int)doc.blocks.size(),
             (int)nodeObjs.size(), (int)doc.shapes.size(),
             (int)doc.blocks.size() - (int)nodeObjs.size() - (int)doc.shapes.size());
+
+    // ── Pass 6: animation controllers ────────────────────────────────────────
+    doc.animClip = ParseNifAnim(nif);
+
     return doc;
 }
 

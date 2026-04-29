@@ -80,6 +80,7 @@ void AppState::NewProject()
     skeletons.clear();
     sequence     = Sequence{};
     loadedCell   = CellContext{};
+    landRecord   = LandRecord{};
     time         = 0.f;
     playing      = false;
     selectedClip = -1;
@@ -239,9 +240,102 @@ bool AppState::LoadCell(const char* formKey, const char* cellName,
     }
 }
 
+bool AppState::LoadExteriorCell(const char* worldspaceFormKey, int cellX, int cellY,
+                                const char* cellName, char* errOut, int errLen)
+{
+    if (!DotNetHost::PluginReady()) {
+        std::snprintf(errOut, errLen, "plugin bridge not available — load a plugin first");
+        return false;
+    }
+
+    // ── Placed refs ────────────────────────────────────────────────────────────
+    std::string refsJson;
+    if (!DotNetHost::ExteriorCellGetRefs(worldspaceFormKey, cellX, cellY,
+                                          refsJson, errOut, errLen))
+        return false;
+
+    // ── Land data ──────────────────────────────────────────────────────────────
+    std::string landJson;
+    char landErr[256] = {};
+    const bool hasLand = DotNetHost::LandGetData(worldspaceFormKey, cellX, cellY,
+                                                  landJson, landErr, sizeof(landErr));
+
+    try {
+        using json = nlohmann::json;
+
+        // Parse refs
+        auto arr = json::parse(refsJson);
+        CellContext ctx;
+        ctx.formKey          = std::string(worldspaceFormKey)
+                             + ":" + std::to_string(cellX) + "," + std::to_string(cellY);
+        ctx.name             = (cellName && *cellName)
+                             ? cellName
+                             : (std::string("Exterior (") + std::to_string(cellX)
+                                + "," + std::to_string(cellY) + ")");
+        ctx.loaded           = true;
+        ctx.isExterior       = true;
+        ctx.worldspaceFormKey = worldspaceFormKey;
+        ctx.cellX            = cellX;
+        ctx.cellY            = cellY;
+
+        for (const auto& j : arr) {
+            CellPlacedRef ref;
+            ref.refFormKey  = j.value("refFormKey",  std::string{});
+            ref.baseFormKey = j.value("baseFormKey", std::string{});
+            ref.nifPath     = j.value("nifPath",     std::string{});
+            ref.posX        = j.value("posX",  0.f);
+            ref.posY        = j.value("posY",  0.f);
+            ref.posZ        = j.value("posZ",  0.f);
+            ref.rotX        = j.value("rotX",  0.f);
+            ref.rotY        = j.value("rotY",  0.f);
+            ref.rotZ        = j.value("rotZ",  0.f);
+            ref.scale       = j.value("scale", 1.f);
+            if (ref.nifPath.empty()) continue;
+            ctx.refs.push_back(std::move(ref));
+        }
+
+        // Parse land data
+        LandRecord land{};
+        if (hasLand && !landJson.empty()) {
+            auto lj = json::parse(landJson);
+            auto jh = lj.value("heights", json::array());
+            for (int y = 0; y < 33; y++)
+                for (int x = 0; x < 33; x++) {
+                    const int idx = y * 33 + x;
+                    if (idx < (int)jh.size())
+                        land.heights[y][x] = jh[idx].get<float>();
+                }
+            auto jc = lj.value("colors", json::array());
+            if (!jc.empty()) {
+                land.hasColors = true;
+                for (int y = 0; y < 33; y++)
+                    for (int x = 0; x < 33; x++) {
+                        const int i3 = (y * 33 + x) * 3;
+                        if (i3 + 2 < (int)jc.size()) {
+                            land.colors[y][x][0] = jc[i3    ].get<uint8_t>();
+                            land.colors[y][x][1] = jc[i3 + 1].get<uint8_t>();
+                            land.colors[y][x][2] = jc[i3 + 2].get<uint8_t>();
+                        }
+                    }
+            }
+        } else if (!hasLand && landErr[0]) {
+            fprintf(stderr, "[AppState] LandGetData warning: %s\n", landErr);
+        }
+
+        loadedCell = std::move(ctx);
+        landRecord  = land;
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::snprintf(errOut, errLen, "exterior cell JSON parse error: %s", e.what());
+        return false;
+    }
+}
+
 void AppState::UnloadCell()
 {
     loadedCell = CellContext{};
+    landRecord  = LandRecord{};
 }
 
 const Skeleton* AppState::SkeletonForCast(int castIndex) const

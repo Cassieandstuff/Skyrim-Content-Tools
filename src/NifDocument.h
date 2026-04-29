@@ -1,7 +1,9 @@
 #pragma once
+#include "NifAnim.h"
 #include "renderer/ISceneRenderer.h"
 #include <glm/glm.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 
 // One block in the NIF file hierarchy (NiNode, BSTriShape, etc.).
@@ -26,11 +28,13 @@ struct SkinBoneBinding {
 };
 
 // Alpha rendering mode decoded from NiAlphaProperty flags.
-// Opaque:    no alpha property, or blending/testing both disabled.
-// AlphaTest: bit 9 set — discard fragments below threshold (depth write stays on).
-// AlphaBlend: bit 0 set, standard src=SRC_ALPHA / dst=ONE_MINUS_SRC_ALPHA.
-// Additive:  bit 0 set, dst blend factor == ONE (fire, glows, particles).
-enum class NifAlphaMode { Opaque, AlphaTest, AlphaBlend, Additive };
+// Opaque:          no alpha property, or blending/testing both disabled.
+// AlphaTest:       bit 9 only — discard fragments below threshold (depth write on).
+// AlphaBlend:      bit 0 only — standard SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend.
+// Additive:        bit 0 + dst==ONE — fire, glows, particles.
+// AlphaTestAndBlend: bits 0 and 9 both set — discard AND blend simultaneously
+//                  (NifSkope applies both GL states independently; depth write off).
+enum class NifAlphaMode { Opaque, AlphaTest, AlphaBlend, Additive, AlphaTestAndBlend };
 
 // Geometry for one renderable shape.
 // Vertex positions are stored in LOCAL shape space.
@@ -46,6 +50,17 @@ struct NifDocShape {
 
     bool                         isSkinned = false;
     std::vector<SkinBoneBinding> skinBindings; // indexed by skin-local bone index
+
+    // For animated NIFs: the shape's own local-to-parent transform and the chain
+    // of ancestor nodes from direct parent up to (but not including) the NIF root.
+    // Each entry is (nodeName, restLocalTransform).  Used by the viewport to
+    // recompose toRoot at runtime when controller data is present.
+    glm::mat4 shapeLocal{ 1.f };
+    std::vector<std::pair<std::string, glm::mat4>> parentChain;
+
+    // Vertex morph animation from NiGeomMorpherController (banners, flags, etc.).
+    // Empty for non-morphing shapes.
+    NifShapeMorphAnim morphAnim;
 };
 
 struct NifDocument {
@@ -53,6 +68,7 @@ struct NifDocument {
     std::vector<NifBlock>    blocks;
     std::vector<NifDocShape> shapes;  // one per renderable block (isShape == true)
     std::vector<int>         roots;   // top-level block indices (parent == -1)
+    NifAnimClip              animClip; // empty if no NiControllerManager found
 
     bool empty() const { return blocks.empty(); }
 };

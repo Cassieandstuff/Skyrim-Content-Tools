@@ -432,6 +432,213 @@ public static class PluginBridge
         catch (Exception ex) { s_lastError = ex.Message; return -1; }
     }
 
+    // ── Worldspace search ─────────────────────────────────────────────────────
+    //
+    // Returns worldspace records (Tamriel, Solstheim, interiors-as-worlds, etc.)
+    // matching the query.  Empty query returns all worldspaces up to maxResults.
+    //
+    // Returns 0 on success, -1 on failure.
+
+    [UnmanagedCallersOnly(EntryPoint = "sct_worldspace_search")]
+    public static unsafe int WorldspaceSearch(byte* queryUtf8, int maxResults,
+                                               byte** outJson, int* outLen)
+    {
+        *outJson = null;
+        *outLen  = 0;
+        try
+        {
+            if (s_loadedMods.Count == 0)
+                throw new InvalidOperationException("no plugin loaded — call sct_plugin_load first");
+
+            var query = Marshal.PtrToStringUTF8((IntPtr)queryUtf8) ?? "";
+            var cap   = maxResults > 0 ? maxResults : 200;
+
+            var records = s_loadedMods
+                .AsEnumerable()
+                .Reverse()
+                .SelectMany(m => m.Worldspaces)
+                .Where(w => MatchesWorldspaceQuery(w, query))
+                .Take(cap)
+                .Select(ToWorldspaceRecord)
+                .ToList();
+
+            return WriteJson(records, outJson, outLen);
+        }
+        catch (Exception ex) { s_lastError = ex.Message; return -1; }
+    }
+
+    // ── Exterior cell get refs ────────────────────────────────────────────────
+    //
+    // Returns placed refs for the exterior cell at grid (cellX, cellY) within
+    // the given worldspace.  Same JSON format as sct_cell_get_refs.
+    //
+    // Returns 0 on success, -1 on failure.
+
+    [UnmanagedCallersOnly(EntryPoint = "sct_exterior_cell_get_refs")]
+    public static unsafe int ExteriorCellGetRefs(byte* wsFormKeyUtf8, int cellX, int cellY,
+                                                  byte** outJson, int* outLen)
+    {
+        *outJson = null;
+        *outLen  = 0;
+        try
+        {
+            if (s_loadedMods.Count == 0 || s_linkCache is null)
+                throw new InvalidOperationException("no plugin loaded");
+
+            var wsFormKeyStr = Marshal.PtrToStringUTF8((IntPtr)wsFormKeyUtf8)
+                               ?? throw new ArgumentException("null worldspace formKey");
+
+            if (!FormKey.TryFactory(wsFormKeyStr, out var wsFormKey))
+                throw new ArgumentException($"invalid worldspace form key: '{wsFormKeyStr}'");
+
+            IWorldspaceGetter? ws = null;
+            foreach (var mod in s_loadedMods.AsEnumerable().Reverse())
+            {
+                ws = mod.Worldspaces.FirstOrDefault(w => w.FormKey == wsFormKey);
+                if (ws is not null) break;
+            }
+            if (ws is null)
+                throw new KeyNotFoundException($"worldspace {wsFormKeyStr} not found");
+
+            // Find the exterior cell at the requested grid position.
+            var cell = ws.SubCells
+                .SelectMany(b => b.Items)
+                .SelectMany(sb => sb.Items)
+                .FirstOrDefault(c => c.Grid?.Point.X == (short)cellX
+                                  && c.Grid?.Point.Y == (short)cellY);
+            if (cell is null)
+                throw new KeyNotFoundException(
+                    $"exterior cell ({cellX},{cellY}) not found in worldspace {wsFormKeyStr}");
+
+            var allRefs = (cell.Temporary   ?? Enumerable.Empty<IPlacedGetter>())
+                .Concat(cell.Persistent ?? Enumerable.Empty<IPlacedGetter>());
+
+            var refs = new List<CellRefRecord>();
+            foreach (var placed in allRefs)
+            {
+                if (placed is not IPlacedObjectGetter pObj) continue;
+                var placement = pObj.Placement;
+                if (placement is null) continue;
+
+                var (nifPath, baseEditorId) = ResolveBaseModelPath(pObj.Base.FormKey);
+                if (string.IsNullOrEmpty(nifPath)) continue;
+
+                refs.Add(new CellRefRecord
+                {
+                    RefFormKey   = pObj.FormKey.ToString(),
+                    BaseFormKey  = pObj.Base.FormKey.ToString(),
+                    BaseEditorId = baseEditorId,
+                    NifPath      = EnsureMeshesPrefix(nifPath),
+                    PosX  = placement.Position.X,
+                    PosY  = placement.Position.Y,
+                    PosZ  = placement.Position.Z,
+                    RotX  = placement.Rotation.X,
+                    RotY  = placement.Rotation.Y,
+                    RotZ  = placement.Rotation.Z,
+                    Scale = pObj.Scale ?? 1.0f,
+                });
+            }
+
+            return WriteJson(refs, outJson, outLen);
+        }
+        catch (Exception ex) { s_lastError = ex.Message; return -1; }
+    }
+
+    // ── Land get data ─────────────────────────────────────────────────────────
+    //
+    // Decodes the LAND (landscape) record for the exterior cell at (cellX, cellY)
+    // in the given worldspace and returns terrain heights + vertex colours.
+    //
+    // JSON response: { "heights": [float x 1089], "colors": [byte x 3267 or empty] }
+    // Heights are world-space Z values in Skyrim units (row-major, 33×33 grid).
+    // Colors are flat RGB bytes (r0,g0,b0, r1,g1,b1, ...) or an empty array if
+    // the LAND record has no VCLR sub-record.
+    //
+    // Returns 0 on success, -1 on failure.
+
+    [UnmanagedCallersOnly(EntryPoint = "sct_land_get_data")]
+    public static unsafe int LandGetData(byte* wsFormKeyUtf8, int cellX, int cellY,
+                                          byte** outJson, int* outLen)
+    {
+        *outJson = null;
+        *outLen  = 0;
+        try
+        {
+            if (s_loadedMods.Count == 0 || s_linkCache is null)
+                throw new InvalidOperationException("no plugin loaded");
+
+            var wsFormKeyStr = Marshal.PtrToStringUTF8((IntPtr)wsFormKeyUtf8)
+                               ?? throw new ArgumentException("null worldspace formKey");
+
+            if (!FormKey.TryFactory(wsFormKeyStr, out var wsFormKey))
+                throw new ArgumentException($"invalid worldspace form key: '{wsFormKeyStr}'");
+
+            IWorldspaceGetter? ws = null;
+            foreach (var mod in s_loadedMods.AsEnumerable().Reverse())
+            {
+                ws = mod.Worldspaces.FirstOrDefault(w => w.FormKey == wsFormKey);
+                if (ws is not null) break;
+            }
+            if (ws is null)
+                throw new KeyNotFoundException($"worldspace {wsFormKeyStr} not found");
+
+            var cell = ws.SubCells
+                .SelectMany(b => b.Items)
+                .SelectMany(sb => sb.Items)
+                .FirstOrDefault(c => c.Grid?.Point.X == (short)cellX
+                                  && c.Grid?.Point.Y == (short)cellY);
+            if (cell is null)
+                throw new KeyNotFoundException(
+                    $"exterior cell ({cellX},{cellY}) not found");
+
+            var landscape = cell.Landscape;
+            if (landscape is null)
+                throw new InvalidOperationException(
+                    $"cell ({cellX},{cellY}) has no LAND record");
+
+            // ── VHGT decode ───────────────────────────────────────────────────
+            // Column 0 accumulates down the grid (each row's col-0 is a delta from
+            // the previous row's col-0).  Each row then accumulates right from its
+            // col-0 value.  Final world height = accumulated_value × 8.
+            var vhgt    = landscape.VertexHeightMap;
+            var heights = new float[33 * 33];
+            if (vhgt is not null)
+            {
+                // HeightMap is ReadOnlyMemorySlice<byte>; values are signed deltas
+                // so each byte must be reinterpreted as sbyte before accumulation.
+                var raw    = vhgt.HeightMap;
+                float col0 = vhgt.Offset;
+                for (int y = 0; y < 33; y++)
+                {
+                    col0 += (sbyte)raw[y * 33 + 0];
+                    float h = col0;
+                    heights[y * 33 + 0] = h * 8.0f;
+                    for (int x = 1; x < 33; x++)
+                    {
+                        h += (sbyte)raw[y * 33 + x];
+                        heights[y * 33 + x] = h * 8.0f;
+                    }
+                }
+            }
+
+            // ── VCLR decode ───────────────────────────────────────────────────
+            // VertexColors is a ReadOnlyMemorySlice<byte>? directly on ILandscapeGetter
+            // (VCLR is raw 33×33×3 = 3267 RGB bytes with no sub-record wrapper).
+            var colors = Array.Empty<byte>();
+            if (landscape.VertexColors is { } vclrRaw && vclrRaw.Length > 0)
+            {
+                var len = Math.Min(vclrRaw.Length, 33 * 33 * 3);
+                colors  = new byte[len];
+                for (int i = 0; i < len; i++)
+                    colors[i] = vclrRaw[i];
+            }
+
+            return WriteJson(new LandData { Heights = heights, Colors = colors },
+                             outJson, outLen);
+        }
+        catch (Exception ex) { s_lastError = ex.Message; return -1; }
+    }
+
     // ── Error retrieval ───────────────────────────────────────────────────────
 
     [UnmanagedCallersOnly(EntryPoint = "sct_plugin_last_error")]
@@ -796,4 +1003,39 @@ public static class PluginBridge
         public string? RaceFormKey { get; init; }
         public bool    IsFemale    { get; init; }
     }
+
+    private record WorldspaceRecord
+    {
+        public string? FormKey      { get; init; }
+        public string? EditorId     { get; init; }
+        public string? Name         { get; init; }
+        public string? PluginSource { get; init; }
+    }
+
+    /// <summary>
+    /// Decoded terrain data for one exterior cell.
+    /// Heights: 33×33 world-space Z values (row-major, 1089 entries).
+    /// Colors:  flat RGB bytes (3267 entries) or empty if no VCLR.
+    /// </summary>
+    private record LandData
+    {
+        public float[] Heights { get; init; } = [];
+        public byte[]  Colors  { get; init; } = [];
+    }
+
+    private static bool MatchesWorldspaceQuery(IWorldspaceGetter ws, string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return true;
+        var q = query.Trim();
+        return ws.EditorID?.Contains(q, StringComparison.OrdinalIgnoreCase) == true
+            || ws.Name?.String?.Contains(q, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static WorldspaceRecord ToWorldspaceRecord(IWorldspaceGetter ws) => new()
+    {
+        FormKey      = ws.FormKey.ToString(),
+        EditorId     = ws.EditorID,
+        Name         = ws.Name?.String,
+        PluginSource = ws.FormKey.ModKey.FileName,
+    };
 }

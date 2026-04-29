@@ -33,7 +33,23 @@ struct CellContext {
     std::vector<CellPlacedRef> refs;    // all placed objects that have a resolved NIF
     bool                       loaded = false;
 
+    // Exterior cell fields (isExterior == true).
+    bool        isExterior        = false;
+    std::string worldspaceFormKey; // parent worldspace FormKey
+    int         cellX             = 0; // exterior cell grid coordinates
+    int         cellY             = 0;
+
     bool Empty() const { return !loaded || refs.empty(); }
+};
+
+// ── LandRecord ────────────────────────────────────────────────────────────────
+// Decoded VHGT/VCLR terrain data for one exterior cell.  Heights are world-space
+// Z values in Skyrim units. Vertex colors are optional (hasColors == false if
+// the LAND record has no VCLR sub-record).
+struct LandRecord {
+    float   heights[33][33]   = {};   // world-space Z, row-major
+    bool    hasColors         = false;
+    uint8_t colors[33][33][3] = {};   // RGB, 0-255
 };
 
 // ── Toast notifications ───────────────────────────────────────────────────────
@@ -96,6 +112,7 @@ struct AppState {
     std::vector<Actor>     actors;    // actor instances active in the scene
     Sequence               sequence;  // the NLE timeline document
     CellContext            loadedCell; // background environment (may be empty)
+    LandRecord             landRecord; // terrain data for current exterior cell (empty if interior)
 
     // ── Playback ───────────────────────────────────────────────────────────────────
     float  time    = 0.f;
@@ -213,7 +230,13 @@ struct AppState {
     bool LoadCell(const char* formKey, const char* cellName,
                   char* errOut, int errLen);
 
-    // Clear loadedCell. ViewportPanel detects the change on the next frame
+    // Load an exterior cell from a worldspace at grid (cellX, cellY).
+    // Fetches placed refs + LAND terrain data via the bridge.
+    // Returns true on success; errOut receives an error message on failure.
+    bool LoadExteriorCell(const char* worldspaceFormKey, int cellX, int cellY,
+                          const char* cellName, char* errOut, int errLen);
+
+    // Clear loadedCell + landRecord. ViewportPanel detects the change on the next frame
     // and frees associated GPU resources.
     void UnloadCell();
 

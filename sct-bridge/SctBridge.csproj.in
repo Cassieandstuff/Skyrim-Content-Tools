@@ -8,7 +8,14 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <!-- Disable SDK glob — this file lives in the build tree, not the source tree.
+         Source files are listed explicitly below with absolute paths injected by CMake. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="@CMAKE_SOURCE_DIR@/sct-bridge/Bridge.cs" />
+    <Compile Include="@CMAKE_SOURCE_DIR@/sct-bridge/PluginBridge.cs" />
+  </ItemGroup>
   <ItemGroup>
     <!-- HKX2EPath is injected by CMake at build time:
          dotnet publish -p:HKX2EPath=<build-tree>/hkx2e-src/HKX2/HKX2E.csproj

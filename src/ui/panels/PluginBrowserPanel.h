@@ -18,6 +18,7 @@ private:
     void DrawSearchTab(AppState& state, int selectedCast);
     void DrawCreateTab(AppState& state, int selectedCast);
     void DrawCellsTab(AppState& state);
+    void DrawExteriorTab(AppState& state);
     void TryAutoLoadPlugin(AppState& state);
 
     // Plugin combo
@@ -47,4 +48,13 @@ private:
     std::vector<CellRecord> cellResults_;
     int  selectedCell_               = -1;
     char cellErr_[256]               = {};
+
+    // Exterior tab
+    char wsSearchBuf_[128]                  = {};
+    std::vector<WorldspaceRecord> wsResults_;
+    int  selectedWs_                        = -1;
+    char wsErr_[256]                        = {};
+    int  exteriorCellX_                     = 0;
+    int  exteriorCellY_                     = 0;
+    char exteriorErr_[256]                  = {};
 };

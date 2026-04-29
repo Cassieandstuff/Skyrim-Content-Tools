@@ -87,6 +87,7 @@ private:
         unsigned int vboUv      = 0;
         unsigned int vboBoneIdx = 0;
         unsigned int vboBoneWt  = 0;
+        unsigned int vboVtxCol  = 0;   // optional per-vertex RGB, location 5
         unsigned int ebo        = 0;
         int          indexCount  = 0;
         int          vertexCount = 0;

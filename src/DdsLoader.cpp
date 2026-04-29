@@ -203,8 +203,10 @@ static unsigned int DdsUploadFromMemory(const uint8_t* data, size_t size,
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_2D, texId);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (int)mipCount - 1);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                    mipCount > 1 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+    // TEST: force GL_LINEAR to diagnose mipmap alpha washout on alpha-tested meshes.
+    // If railings become visible at distance, mip averaging is discarding alpha-tested
+    // pixels — restore GL_LINEAR_MIPMAP_LINEAR and fix properly (mip bias / threshold).
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);

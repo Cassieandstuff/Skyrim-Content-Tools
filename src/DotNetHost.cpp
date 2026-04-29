@@ -59,8 +59,11 @@ using ProjectNewFn      = int  (*)(const char* modName);
 using ProjectLoadFn     = int  (*)(const char* path);
 using ProjectSaveFn     = int  (*)(const char* path);
 using NpcCreateFn       = int  (*)(const char* inJson, char** outJson, int* outLen);
-using CellSearchFn      = int  (*)(const char* query, int maxResults, char** outJson, int* outLen);
-using CellGetRefsFn     = int  (*)(const char* formKey, char** outJson, int* outLen);
+using CellSearchFn          = int  (*)(const char* query, int maxResults, char** outJson, int* outLen);
+using CellGetRefsFn         = int  (*)(const char* formKey, char** outJson, int* outLen);
+using WorldspaceSearchFn    = int  (*)(const char* query, int maxResults, char** outJson, int* outLen);
+using ExteriorCellGetRefsFn = int  (*)(const char* wsFormKey, int cellX, int cellY, char** outJson, int* outLen);
+using LandGetDataFn         = int  (*)(const char* wsFormKey, int cellX, int cellY, char** outJson, int* outLen);
 
 // ── Module-level state ────────────────────────────────────────────────────────
 
@@ -79,9 +82,12 @@ static ProjectNewFn   s_projectNew      = nullptr;
 static ProjectLoadFn  s_projectLoad     = nullptr;
 static ProjectSaveFn  s_projectSave     = nullptr;
 static NpcCreateFn    s_pluginNpcCreate = nullptr;
-static CellSearchFn   s_cellSearch      = nullptr;
-static CellGetRefsFn  s_cellGetRefs     = nullptr;
-static LastErrorFn    s_pluginLastError = nullptr;
+static CellSearchFn          s_cellSearch          = nullptr;
+static CellGetRefsFn         s_cellGetRefs         = nullptr;
+static WorldspaceSearchFn    s_worldspaceSearch    = nullptr;
+static ExteriorCellGetRefsFn s_exteriorCellGetRefs = nullptr;
+static LandGetDataFn         s_landGetData         = nullptr;
+static LastErrorFn           s_pluginLastError     = nullptr;
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -227,6 +233,11 @@ bool DotNetHost::Init(char* errOut, int errLen)
     auto load = [&](const wchar_t* method, void** fn) -> bool {
         int r = loadFn(bridgePath.c_str(), kType, method,
                        kUnmanagedCallersOnly, nullptr, fn);
+        if (r != 0 || !*fn) {
+            fprintf(stderr, "[SCT] load_assembly_and_get_function_pointer('%ls') failed: 0x%x\n",
+                    method, static_cast<unsigned>(r));
+            fflush(stderr);
+        }
         return r == 0 && *fn != nullptr;
     };
 
@@ -234,7 +245,8 @@ bool DotNetHost::Init(char* errOut, int errLen)
         !load(L"FreeBuffer",  reinterpret_cast<void**>(&s_freeBuffer)) ||
         !load(L"LastError",   reinterpret_cast<void**>(&s_lastError)))
     {
-        std::snprintf(errOut, errLen, "Failed to load one or more SctBridge entry points");
+        std::snprintf(errOut, errLen, "Failed to load one or more SctBridge entry points "
+                      "(see stderr / Output window for HRESULT)");
         return false;
     }
 
@@ -264,8 +276,11 @@ bool DotNetHost::Init(char* errOut, int errLen)
     loadPlugin(L"LoadOrderLoad", reinterpret_cast<void**>(&s_loadOrderLoad));
 
     // Optional — cell browsing support (added with previs work).
-    loadPlugin(L"CellSearch",   reinterpret_cast<void**>(&s_cellSearch));
-    loadPlugin(L"CellGetRefs",  reinterpret_cast<void**>(&s_cellGetRefs));
+    loadPlugin(L"CellSearch",          reinterpret_cast<void**>(&s_cellSearch));
+    loadPlugin(L"CellGetRefs",         reinterpret_cast<void**>(&s_cellGetRefs));
+    loadPlugin(L"WorldspaceSearch",    reinterpret_cast<void**>(&s_worldspaceSearch));
+    loadPlugin(L"ExteriorCellGetRefs", reinterpret_cast<void**>(&s_exteriorCellGetRefs));
+    loadPlugin(L"LandGetData",         reinterpret_cast<void**>(&s_landGetData));
 
     return true;
 }
@@ -459,6 +474,75 @@ bool DotNetHost::CellGetRefs(const char* formKey,
     }
     char* buf = nullptr; int len = 0;
     if (s_cellGetRefs(formKey, &buf, &len) == 0) {
+        outJson.assign(buf, len);
+        FreeBuffer(buf);
+        return true;
+    }
+    if (s_pluginLastError && errOut && errLen > 0) s_pluginLastError(errOut, errLen);
+    return false;
+}
+
+bool DotNetHost::WorldspaceSearch(const char* query, int maxResults,
+                                   std::string& outJson,
+                                   char* errOut, int errLen)
+{
+    if (!s_pluginReady) {
+        std::snprintf(errOut, errLen, "plugin bridge not initialized");
+        return false;
+    }
+    if (!s_worldspaceSearch) {
+        std::snprintf(errOut, errLen,
+            "WorldspaceSearch not available — rebuild SctBridge");
+        return false;
+    }
+    char* buf = nullptr; int len = 0;
+    if (s_worldspaceSearch(query, maxResults, &buf, &len) == 0) {
+        outJson.assign(buf, len);
+        FreeBuffer(buf);
+        return true;
+    }
+    if (s_pluginLastError && errOut && errLen > 0) s_pluginLastError(errOut, errLen);
+    return false;
+}
+
+bool DotNetHost::ExteriorCellGetRefs(const char* worldspaceFormKey, int cellX, int cellY,
+                                      std::string& outJson,
+                                      char* errOut, int errLen)
+{
+    if (!s_pluginReady) {
+        std::snprintf(errOut, errLen, "plugin bridge not initialized");
+        return false;
+    }
+    if (!s_exteriorCellGetRefs) {
+        std::snprintf(errOut, errLen,
+            "ExteriorCellGetRefs not available — rebuild SctBridge");
+        return false;
+    }
+    char* buf = nullptr; int len = 0;
+    if (s_exteriorCellGetRefs(worldspaceFormKey, cellX, cellY, &buf, &len) == 0) {
+        outJson.assign(buf, len);
+        FreeBuffer(buf);
+        return true;
+    }
+    if (s_pluginLastError && errOut && errLen > 0) s_pluginLastError(errOut, errLen);
+    return false;
+}
+
+bool DotNetHost::LandGetData(const char* worldspaceFormKey, int cellX, int cellY,
+                              std::string& outJson,
+                              char* errOut, int errLen)
+{
+    if (!s_pluginReady) {
+        std::snprintf(errOut, errLen, "plugin bridge not initialized");
+        return false;
+    }
+    if (!s_landGetData) {
+        std::snprintf(errOut, errLen,
+            "LandGetData not available — rebuild SctBridge");
+        return false;
+    }
+    char* buf = nullptr; int len = 0;
+    if (s_landGetData(worldspaceFormKey, cellX, cellY, &buf, &len) == 0) {
         outJson.assign(buf, len);
         FreeBuffer(buf);
         return true;

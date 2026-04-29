@@ -2,6 +2,7 @@
 #include "ui/IPanel.h"
 #include "AppState.h"
 #include "Camera.h"
+#include "NifAnim.h"
 #include "Pose.h"
 #include "renderer/ISceneRenderer.h"
 #include <atomic>
@@ -9,6 +10,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -68,6 +70,11 @@ private:
         std::vector<uint8_t>   ddsBytes;      // pre-extracted; empty = miss
         DrawSurface::BlendMode blendMode      = DrawSurface::BlendMode::Opaque;
         float                  alphaThreshold = 0.5f;
+        // Animation support
+        glm::mat4                                     shapeLocal{ 1.f };
+        std::vector<std::pair<std::string, glm::mat4>> parentChain;
+        NifAnimClip                                   animClip;   // set on first shape per base
+        NifShapeMorphAnim                             morphAnim;  // per-shape vertex morph
     };
 
     // ── Per-actor render cache ────────────────────────────────────────────────
@@ -96,11 +103,17 @@ private:
         glm::vec3               localMax       = glm::vec3(0.f);
         DrawSurface::BlendMode  blendMode      = DrawSurface::BlendMode::Opaque;
         float                   alphaThreshold = 0.5f;
+        // Animation support: shape local transform + ancestor chain for toRoot
+        // recomposition when the NIF has controller data.
+        glm::mat4                                     shapeLocal{ 1.f };
+        std::vector<std::pair<std::string, glm::mat4>> parentChain;
+        NifShapeMorphAnim                             morphAnim;
     };
 
     // All shapes belonging to one unique base object, keyed by baseFormKey.
     struct CellCatalogEntry {
         std::vector<CellShapeEntry> shapes;
+        NifAnimClip                 animClip;  // empty for unanimated NIFs
     };
 
     // One placed reference: catalog lookup key + pre-baked world transform.
@@ -132,6 +145,8 @@ private:
     std::string                             cellLoadedKey_;
     std::map<std::string, CellCatalogEntry> cellMeshCatalog_; // baseFormKey → shapes
     std::vector<CellInstance>               cellInstances_;
+    MeshHandle                              terrainMesh_  = MeshHandle::Invalid;
+    std::string                             terrainCellKey_;   // key for terrain mesh invalidation
     // Texture dedup cache: lowercase-normalised diffuse path → GPU handle.
     // Shapes reference handles here but don't own them; FreeCellCache frees this map.
     std::unordered_map<std::string, TextureHandle> cellTexCache_;
@@ -145,12 +160,18 @@ private:
     std::mutex                cellStreamMtx_;
     std::vector<PendingShape> cellStreamPending_;      // worker pushes, main drains
 
+    // ── Ambient simulation clock ──────────────────────────────────────────────
+    // Free-running; not tied to scene playback state.  Drives NIF controller
+    // animations for cell environment objects.
+    float simTime_ = 0.f;
+
     // ── Internals ─────────────────────────────────────────────────────────────
     void RebuildActorCache(AppState& state);
-    void SyncNifHandles(AppState& state);  // re-uploads if nifPath changed
-    void SyncCellMeshes(AppState& state);  // detect cell change, launch stream
-    void FreeCellCache();                   // cancel stream + free all GPU resources
-    void SyncMorphs(AppState& state);      // applies ARKit blend-shape weights to face meshes
+    void SyncNifHandles(AppState& state);   // re-uploads if nifPath changed
+    void SyncCellMeshes(AppState& state);   // detect cell change, launch stream
+    void SyncTerrainMesh(AppState& state);  // upload terrain mesh for exterior cells
+    void FreeCellCache();                    // cancel stream + free all GPU resources
+    void SyncMorphs(AppState& state);       // applies ARKit blend-shape weights to face meshes
     void EvaluatePoses(AppState& state);
     void FrameAll();
     // Ray-cast picking: returns index into loadedCell.refs, or -1.

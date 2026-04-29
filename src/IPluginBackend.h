@@ -31,6 +31,14 @@ struct NpcRecord {
     std::vector<std::string> headPartNifs;
 };
 
+// A WRLD (worldspace) record found by sct_worldspace_search.
+struct WorldspaceRecord {
+    std::string formKey;      // "XXXXXXXX:Plugin.esm"
+    std::string editorId;
+    std::string name;         // FULL display name; may be empty
+    std::string pluginSource; // e.g. "Skyrim.esm"
+};
+
 // A CELL record found by sct_cell_search.
 struct CellRecord {
     uint32_t    formId = 0;

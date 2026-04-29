@@ -73,4 +73,21 @@ struct DotNetHost {
     static bool CellGetRefs(const char* formKey,
                             std::string& outJson,
                             char* errOut, int errLen);
+
+    // Search worldspaces; outJson receives a UTF-8 JSON array of WorldspaceRecord.
+    static bool WorldspaceSearch(const char* query, int maxResults,
+                                 std::string& outJson,
+                                 char* errOut, int errLen);
+
+    // Fetch placed refs for an exterior cell at grid (cellX, cellY) in the given
+    // worldspace.  Same JSON format as CellGetRefs.
+    static bool ExteriorCellGetRefs(const char* worldspaceFormKey, int cellX, int cellY,
+                                    std::string& outJson,
+                                    char* errOut, int errLen);
+
+    // Fetch decoded terrain height + colour data for the LAND record of an exterior
+    // cell.  outJson = { heights:[float x 1089], colors:[byte x 3267 or empty] }.
+    static bool LandGetData(const char* worldspaceFormKey, int cellX, int cellY,
+                            std::string& outJson,
+                            char* errOut, int errLen);
 };

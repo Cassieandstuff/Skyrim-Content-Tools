@@ -4,6 +4,7 @@
 #include "NifDocument.h"
 #include "Sequence.h"
 #include "HavokSkeleton.h"
+#include "TerrainMesh.h"
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -187,6 +188,9 @@ void ViewportPanel::Draw(AppState& state)
     // Rebuild cell GPU cache if the loaded cell changed.
     SyncCellMeshes(state);
 
+    // Upload terrain mesh for exterior cells (keyed separately from cell stream).
+    SyncTerrainMesh(state);
+
     // Evaluate all actor poses for this frame (also fills morphWeightsEval from FaceData track).
     EvaluatePoses(state);
 
@@ -213,6 +217,9 @@ void ViewportPanel::Draw(AppState& state)
             se.localMax       = ps.localMax;
             se.blendMode      = ps.blendMode;
             se.alphaThreshold = ps.alphaThreshold;
+            se.shapeLocal     = ps.shapeLocal;
+            se.parentChain    = std::move(ps.parentChain);
+            se.morphAnim      = std::move(ps.morphAnim);
             se.mesh           = renderer_.UploadMesh(ps.meshData);
 
             if (!ps.diffusePath.empty()) {
@@ -227,9 +234,17 @@ void ViewportPanel::Draw(AppState& state)
                     se.texture = th;
                 }
             }
-            cellMeshCatalog_[ps.baseFormKey].shapes.push_back(std::move(se));
+
+            CellCatalogEntry& entry = cellMeshCatalog_[ps.baseFormKey];
+            // animClip is only set on the first PendingShape per base.
+            if (!ps.animClip.empty())
+                entry.animClip = std::move(ps.animClip);
+            entry.shapes.push_back(std::move(se));
         }
     }
+
+    // Advance free-running ambient simulation clock (independent of scene time).
+    simTime_ += ImGui::GetIO().DeltaTime;
 
     renderer_.BeginFrame(iw, ih);
     renderer_.SetCamera(view, proj);
@@ -252,17 +267,51 @@ void ViewportPanel::Draw(AppState& state)
         else if (camera_.radius > 20.f)  unit = 10.f;
         renderer_.DrawGrid(unit, 10);
 
-        // kNifToWorld defined at file scope above — converts NIF/Havok Z-up to Y-up world.
+        // ── Terrain mesh — drawn before cell objects so they render on top ────────
+        if (terrainMesh_ != MeshHandle::Invalid) {
+            DrawSurface terrSurf;
+            terrSurf.useVertexColor = state.landRecord.hasColors;
+            terrSurf.tint = state.landRecord.hasColors
+                ? glm::vec4(1.f, 1.f, 1.f, 1.f)
+                : glm::vec4(0.35f, 0.45f, 0.30f, 1.f);
+            renderer_.DrawMesh(terrainMesh_, glm::mat4(1.f), terrSurf);
+        }
 
         // ── Cell environment — two-pass to avoid blended surfaces writing depth ──
         // Pass 1: opaque + alpha-test (depth write on, full depth rejection)
         // Pass 2: alpha-blend + additive (depth write off, blended on top)
-        auto drawCellShape = [&](const CellInstance& inst, const CellShapeEntry& shape,
+
+        // Recompute a shape's toRoot from its parentChain using animated local
+        // transforms where available, falling back to rest transforms.
+        auto animatedToRoot = [](const CellShapeEntry& shape,
+                                 const std::unordered_map<std::string, glm::mat4>& animLocals)
+            -> glm::mat4
+        {
+            glm::mat4 result = shape.shapeLocal;
+            for (const auto& [name, restLocal] : shape.parentChain) {
+                auto it = animLocals.find(name);
+                result = (it != animLocals.end() ? it->second : restLocal) * result;
+            }
+            return result;
+        };
+
+        auto drawCellShape = [&](const CellInstance& inst,
+                                 const CellShapeEntry& shape,
+                                 const std::unordered_map<std::string, glm::mat4>& animLocals,
                                  bool pass2) {
             if (shape.mesh == MeshHandle::Invalid) return;
+            // AlphaTestAndBlend routes to pass 1 (depth write on) like AlphaTest:
+            // surviving pixels are fully opaque in practice (DXT1 punch-through),
+            // so depth must be written for correct occlusion at distance.
             const bool isBlended = (shape.blendMode == DrawSurface::BlendMode::AlphaBlend ||
                                     shape.blendMode == DrawSurface::BlendMode::Additive);
             if (isBlended != pass2) return;
+
+            // Use animated toRoot if the catalog entry has controller data,
+            // otherwise fall back to the baked static toRoot.
+            const glm::mat4 toRoot = animLocals.empty()
+                ? shape.toRoot
+                : animatedToRoot(shape, animLocals);
 
             const bool selected = (inst.refIndex == state.selectedCellRefIndex);
             DrawSurface surf;
@@ -276,15 +325,36 @@ void ViewportPanel::Draw(AppState& state)
                     ? glm::vec4(1.f, 1.f, 1.f, 1.f)
                     : glm::vec4(0.70f, 0.70f, 0.75f, 1.f);
             }
-            renderer_.DrawMesh(shape.mesh, inst.placement * shape.toRoot, surf);
+            renderer_.DrawMesh(shape.mesh, inst.placement * toRoot, surf);
         };
+
+        // Pre-pass: update GPU position buffers for morph-animated shapes.
+        // Done once per catalog entry (not per instance) so shared mesh handles
+        // are only written once per frame regardless of how many instances share them.
+        {
+            std::vector<glm::vec3> morphScratch;
+            for (const auto& [key, entry] : cellMeshCatalog_) {
+                for (const auto& shape : entry.shapes) {
+                    if (shape.morphAnim.empty()) continue;
+                    shape.morphAnim.Evaluate(simTime_, morphScratch);
+                    renderer_.UpdateMeshPositions(shape.mesh, morphScratch);
+                }
+            }
+        }
 
         for (int pass = 0; pass < 2; ++pass) {
             for (const auto& inst : cellInstances_) {
                 auto it = cellMeshCatalog_.find(inst.baseFormKey);
                 if (it == cellMeshCatalog_.end()) continue;
-                for (const auto& shape : it->second.shapes)
-                    drawCellShape(inst, shape, pass == 1);
+                const CellCatalogEntry& entry = it->second;
+
+                // Evaluate animated node transforms once per catalog entry per frame.
+                std::unordered_map<std::string, glm::mat4> animLocals;
+                if (!entry.animClip.empty())
+                    entry.animClip.Evaluate(simTime_, animLocals);
+
+                for (const auto& shape : entry.shapes)
+                    drawCellShape(inst, shape, animLocals, pass == 1);
             }
         }
 
@@ -401,6 +471,22 @@ void ViewportPanel::Draw(AppState& state)
             dl->AddRectFilled({bx - 6, by - 4}, {bx + ts.x + 6, by + ts.y + 4},
                               IM_COL32(8, 10, 16, 180), 4.f);
             dl->AddText({bx, by}, badgeC, badge);
+
+            // Exterior cell coordinate badge — top centre
+            if (state.loadedCell.loaded && state.loadedCell.isExterior) {
+                char coordText[128];
+                std::snprintf(coordText, sizeof(coordText), "Cell [%d, %d]  (%.0f, %.0f)",
+                              state.loadedCell.cellX, state.loadedCell.cellY,
+                              (float)(state.loadedCell.cellX * 4096),
+                              (float)(state.loadedCell.cellY * 4096));
+                const ImVec2 cts = ImGui::CalcTextSize(coordText);
+                const float  ctx = imgMin.x + size.x * 0.5f - cts.x * 0.5f;
+                const float  cty = imgMin.y + 10.f;
+                dl->AddRectFilled({ctx - 6.f, cty - 4.f},
+                                  {ctx + cts.x + 6.f, cty + cts.y + 4.f},
+                                  IM_COL32(8, 10, 16, 180), 4.f);
+                dl->AddText({ctx, cty}, IM_COL32(180, 200, 240, 220), coordText);
+            }
 
             // Cell stream progress bar — bottom centre, visible while loading.
             if (cellStreaming_ || cellStreamDone_ < cellStreamTotal_) {
@@ -675,6 +761,12 @@ void ViewportPanel::FreeCellCache()
     cellStreamTotal_ = 0;
     cellStreamDone_  = 0;
     cellStreaming_    = false;
+
+    if (terrainMesh_ != MeshHandle::Invalid) {
+        renderer_.FreeMesh(terrainMesh_);
+        terrainMesh_ = MeshHandle::Invalid;
+    }
+    terrainCellKey_.clear();
 }
 
 void ViewportPanel::SyncCellMeshes(AppState& state)
@@ -715,6 +807,42 @@ void ViewportPanel::SyncCellMeshes(AppState& state)
                               state.dataFolder,
                               state.bsaSearchList,
                               state.loadedCell.refs);
+}
+
+void ViewportPanel::SyncTerrainMesh(AppState& state)
+{
+    const std::string key = (state.loadedCell.loaded && state.loadedCell.isExterior)
+                          ? state.loadedCell.formKey : std::string{};
+    if (key == terrainCellKey_) return;
+    terrainCellKey_ = key;
+
+    if (terrainMesh_ != MeshHandle::Invalid) {
+        renderer_.FreeMesh(terrainMesh_);
+        terrainMesh_ = MeshHandle::Invalid;
+    }
+
+    if (key.empty()) return;
+
+    MeshData md = GenerateTerrainMesh(state.landRecord,
+                                      state.loadedCell.cellX, state.loadedCell.cellY);
+    terrainMesh_ = renderer_.UploadMesh(md);
+    fprintf(stderr, "[Terrain] Generated mesh for cell (%d,%d)\n",
+            state.loadedCell.cellX, state.loadedCell.cellY);
+
+    // Aim the camera at the terrain centre at average height.
+    float avgH = 0.f;
+    for (int r = 0; r < 33; r++)
+        for (int c = 0; c < 33; c++)
+            avgH += state.landRecord.heights[r][c];
+    avgH /= (33.f * 33.f);
+
+    camera_.target    = glm::vec3(
+        (float)(state.loadedCell.cellX * 4096 + 2048),
+        (float)(state.loadedCell.cellY * 4096 + 2048),
+        avgH);
+    camera_.radius    = 8192.f;
+    camera_.azimuth   = 210.f;
+    camera_.elevation = 30.f;
 }
 
 void ViewportPanel::StreamWorker(std::string dataFolder,
@@ -809,11 +937,15 @@ void ViewportPanel::StreamWorker(std::string dataFolder,
             ps.meshData       = ds.meshData;
             ps.toRoot         = block.toRoot;
             ps.alphaThreshold = ds.alphaThreshold;
+            ps.shapeLocal     = ds.shapeLocal;
+            ps.parentChain    = ds.parentChain;
+            ps.morphAnim      = std::move(ds.morphAnim);
             switch (ds.alphaMode) {
-                case NifAlphaMode::AlphaTest:  ps.blendMode = DrawSurface::BlendMode::AlphaTest;  break;
-                case NifAlphaMode::AlphaBlend: ps.blendMode = DrawSurface::BlendMode::AlphaBlend; break;
-                case NifAlphaMode::Additive:   ps.blendMode = DrawSurface::BlendMode::Additive;   break;
-                default:                       ps.blendMode = DrawSurface::BlendMode::Opaque;     break;
+                case NifAlphaMode::AlphaTest:        ps.blendMode = DrawSurface::BlendMode::AlphaTest;        break;
+                case NifAlphaMode::AlphaBlend:       ps.blendMode = DrawSurface::BlendMode::AlphaBlend;       break;
+                case NifAlphaMode::Additive:         ps.blendMode = DrawSurface::BlendMode::Additive;         break;
+                case NifAlphaMode::AlphaTestAndBlend:ps.blendMode = DrawSurface::BlendMode::AlphaTestAndBlend;break;
+                default:                             ps.blendMode = DrawSurface::BlendMode::Opaque;           break;
             }
             // Local-space AABB for ray picking.
             glm::vec3 lo(FLT_MAX), hi(-FLT_MAX);
@@ -835,6 +967,9 @@ void ViewportPanel::StreamWorker(std::string dataFolder,
         }
 
         if (!batch.empty() && !cellStreamCancel_) {
+            // Store animClip in the first shape only — main thread drains it
+            // into the CellCatalogEntry on first encounter for this base.
+            batch[0].animClip = std::move(doc.animClip);
             std::lock_guard<std::mutex> lk(cellStreamMtx_);
             for (auto& ps : batch)
                 cellStreamPending_.push_back(std::move(ps));

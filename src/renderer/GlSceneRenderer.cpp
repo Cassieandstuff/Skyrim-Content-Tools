@@ -56,42 +56,55 @@ static const char* kMeshVS = R"(#version 450 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_norm;
 layout(location = 2) in vec2 a_uv;
+layout(location = 5) in vec3 a_vtxCol;
 uniform mat4 u_mvp;
 uniform mat4 u_model;
 out vec3 v_norm;
 out vec3 v_worldPos;
 out vec2 v_uv;
+out vec3 v_vtxCol;
 void main() {
     vec4 wp     = u_model * vec4(a_pos, 1.0);
     gl_Position = u_mvp * vec4(a_pos, 1.0);
     v_worldPos  = wp.xyz;
-    v_norm = mat3(transpose(inverse(u_model))) * a_norm;
-    v_uv   = a_uv;
+    v_norm   = mat3(transpose(inverse(u_model))) * a_norm;
+    v_uv     = a_uv;
+    v_vtxCol = a_vtxCol;
 }
 )";
 
 // Shared fragment shader for static and skinned meshes.
-// u_alphaMode: 0=opaque, 1=alphatest (discard), 2=alphablend, 3=additive
+// u_alphaMode: 0=opaque 1=alphatest 2=alphablend 3=additive 4=alphatestblend
+// u_useVtxColor: 1 = use v_vtxCol (normalised to 0-1) * tint as base, overrides hasTex
 static const char* kMeshFS = R"(#version 450 core
 in  vec3 v_norm;
 in  vec3 v_worldPos;
 in  vec2 v_uv;
+in  vec3 v_vtxCol;
 uniform vec4      u_tint;
 uniform int       u_hasTex;
+uniform int       u_useVtxColor;     // 1 = use per-vertex colour as base
 uniform sampler2D u_diffuse;
 uniform vec3      u_lightDir;
 uniform vec3      u_lightColor;
 uniform vec3      u_ambientColor;
 uniform vec3      u_camPos;
-uniform int       u_alphaMode;       // 0=opaque 1=alphatest 2=alphablend 3=additive
-uniform float     u_alphaThreshold;  // normalised discard threshold (alphatest only)
+uniform int       u_alphaMode;       // 0=opaque 1=alphatest 2=alphablend 3=additive 4=alphatestblend
+uniform float     u_alphaThreshold;  // normalised discard threshold (alphatest/alphatestblend)
 out vec4 f_col;
 void main() {
     vec3 n = normalize(v_norm);
 
-    vec4 base = (u_hasTex == 1) ? texture(u_diffuse, v_uv) : u_tint;
+    vec4 base;
+    if (u_useVtxColor == 1)
+        base = vec4(v_vtxCol, 1.0) * u_tint;
+    else if (u_hasTex == 1)
+        base = texture(u_diffuse, v_uv);
+    else
+        base = u_tint;
+
     if (u_alphaMode == 0 && base.a < 0.01) base = vec4(0.72, 0.72, 0.76, 1.0);
-    if (u_alphaMode == 1 && base.a < u_alphaThreshold) discard;
+    if ((u_alphaMode == 1 || u_alphaMode == 4) && base.a < u_alphaThreshold) discard;
 
     float diff = max(dot(n, u_lightDir), 0.0);
 
@@ -120,6 +133,7 @@ uniform mat4 u_model;
 out vec3 v_norm;
 out vec3 v_worldPos;
 out vec2 v_uv;
+out vec3 v_vtxCol;
 void main() {
     mat4 skin = a_boneWt.x * u_bones[a_boneIdx.x]
               + a_boneWt.y * u_bones[a_boneIdx.y]
@@ -128,8 +142,9 @@ void main() {
     vec4 wp     = u_model * skin * vec4(a_pos, 1.0);
     gl_Position = u_vp * wp;
     v_worldPos  = wp.xyz;
-    v_norm = mat3(transpose(inverse(u_model))) * mat3(skin) * a_norm;
-    v_uv   = a_uv;
+    v_norm   = mat3(transpose(inverse(u_model))) * mat3(skin) * a_norm;
+    v_uv     = a_uv;
+    v_vtxCol = vec3(1.0);  // skinned meshes don't use vertex colour
 }
 )";
 
@@ -200,6 +215,9 @@ GlSceneRenderer::GlSceneRenderer()
 
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_DEPTH_TEST);
+    // GL_LEQUAL so AlphaBlend shapes flush with pass-1 geometry (same depth)
+    // pass the depth test rather than being silently culled.
+    glDepthFunc(GL_LEQUAL);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
@@ -210,8 +228,8 @@ GlSceneRenderer::~GlSceneRenderer()
     for (auto& [id, gm] : m_meshes) {
         glDeleteVertexArrays(1, &gm.vao);
         unsigned int bufs[] = { gm.vboPos, gm.vboNorm, gm.vboUv,
-                                gm.vboBoneIdx, gm.vboBoneWt, gm.ebo };
-        glDeleteBuffers(6, bufs);
+                                gm.vboBoneIdx, gm.vboBoneWt, gm.vboVtxCol, gm.ebo };
+        glDeleteBuffers(7, bufs);
     }
     // Textures
     for (auto& [id, tex] : m_textures)
@@ -474,6 +492,15 @@ MeshHandle GlSceneRenderer::UploadMesh(const MeshData& data)
         glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
     }
 
+    // Vertex colours (location 5) — normalised to [0,1] in the shader
+    if (!data.vertexColors.empty()) {
+        uploadBuf(gm.vboVtxCol, GL_ARRAY_BUFFER,
+                  data.vertexColors.data(),
+                  (GLsizeiptr)(data.vertexColors.size() * sizeof(glm::u8vec3)));
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 3, GL_UNSIGNED_BYTE, GL_TRUE, 0, nullptr);
+    }
+
     // Index buffer
     uploadBuf(gm.ebo, GL_ELEMENT_ARRAY_BUFFER,
               data.indices.data(),
@@ -493,8 +520,8 @@ void GlSceneRenderer::FreeMesh(MeshHandle handle)
     GpuMesh& gm = it->second;
     glDeleteVertexArrays(1, &gm.vao);
     unsigned int bufs[] = { gm.vboPos, gm.vboNorm, gm.vboUv,
-                             gm.vboBoneIdx, gm.vboBoneWt, gm.ebo };
-    glDeleteBuffers(6, bufs);
+                             gm.vboBoneIdx, gm.vboBoneWt, gm.vboVtxCol, gm.ebo };
+    glDeleteBuffers(7, bufs);
     m_meshes.erase(it);
 }
 
@@ -577,11 +604,15 @@ void GlSceneRenderer::DrawMesh(MeshHandle handle, const glm::mat4& world,
     glUniform3fv(glGetUniformLocation(m_meshShader, "u_camPos"),       1, glm::value_ptr(camPos));
 
     int alphaMode = 0;
-    if      (surface.blendMode == DrawSurface::BlendMode::AlphaTest)  alphaMode = 1;
-    else if (surface.blendMode == DrawSurface::BlendMode::AlphaBlend) alphaMode = 2;
-    else if (surface.blendMode == DrawSurface::BlendMode::Additive)   alphaMode = 3;
+    if      (surface.blendMode == DrawSurface::BlendMode::AlphaTest)        alphaMode = 1;
+    else if (surface.blendMode == DrawSurface::BlendMode::AlphaBlend)       alphaMode = 2;
+    else if (surface.blendMode == DrawSurface::BlendMode::Additive)         alphaMode = 3;
+    else if (surface.blendMode == DrawSurface::BlendMode::AlphaTestAndBlend) alphaMode = 4;
     glUniform1i(glGetUniformLocation(m_meshShader, "u_alphaMode"),      alphaMode);
     glUniform1f(glGetUniformLocation(m_meshShader, "u_alphaThreshold"), surface.alphaThreshold);
+
+    glUniform1i(glGetUniformLocation(m_meshShader, "u_useVtxColor"),
+                surface.useVertexColor ? 1 : 0);
 
     const bool hasTex = (surface.diffuse != TextureHandle::Invalid);
     glUniform1i(glGetUniformLocation(m_meshShader, "u_hasTex"), hasTex ? 1 : 0);
@@ -594,7 +625,9 @@ void GlSceneRenderer::DrawMesh(MeshHandle handle, const glm::mat4& world,
         }
     }
 
-    // Blend state — AlphaTest keeps depth write on; others turn it off.
+    // Blend state — AlphaTest and AlphaTestAndBlend keep depth write on (surviving
+    // pixels are opaque; correct occlusion requires depth writes).
+    // AlphaBlend and Additive turn depth write off.
     if (surface.blendMode == DrawSurface::BlendMode::Additive)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     const bool depthWriteOff = (alphaMode == 2 || alphaMode == 3);
@@ -646,11 +679,14 @@ void GlSceneRenderer::DrawSkinnedMesh(MeshHandle handle, const glm::mat4& world,
     glUniform3fv(glGetUniformLocation(m_skinnedShader, "u_camPos"),       1, glm::value_ptr(camPos));
 
     int alphaMode = 0;
-    if      (surface.blendMode == DrawSurface::BlendMode::AlphaTest)  alphaMode = 1;
-    else if (surface.blendMode == DrawSurface::BlendMode::AlphaBlend) alphaMode = 2;
-    else if (surface.blendMode == DrawSurface::BlendMode::Additive)   alphaMode = 3;
+    if      (surface.blendMode == DrawSurface::BlendMode::AlphaTest)        alphaMode = 1;
+    else if (surface.blendMode == DrawSurface::BlendMode::AlphaBlend)       alphaMode = 2;
+    else if (surface.blendMode == DrawSurface::BlendMode::Additive)         alphaMode = 3;
+    else if (surface.blendMode == DrawSurface::BlendMode::AlphaTestAndBlend) alphaMode = 4;
     glUniform1i(glGetUniformLocation(m_skinnedShader, "u_alphaMode"),      alphaMode);
     glUniform1f(glGetUniformLocation(m_skinnedShader, "u_alphaThreshold"), surface.alphaThreshold);
+
+    glUniform1i(glGetUniformLocation(m_skinnedShader, "u_useVtxColor"), 0);
 
     const bool hasTex = (surface.diffuse != TextureHandle::Invalid);
     glUniform1i(glGetUniformLocation(m_skinnedShader, "u_hasTex"), hasTex ? 1 : 0);
@@ -663,7 +699,8 @@ void GlSceneRenderer::DrawSkinnedMesh(MeshHandle handle, const glm::mat4& world,
         }
     }
 
-    // Blend state — AlphaTest keeps depth write on; others turn it off.
+    // Blend state — AlphaTest and AlphaTestAndBlend keep depth write on.
+    // AlphaBlend and Additive turn depth write off.
     if (surface.blendMode == DrawSurface::BlendMode::Additive)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     const bool depthWriteOff = (alphaMode == 2 || alphaMode == 3);

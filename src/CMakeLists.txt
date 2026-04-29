@@ -33,8 +33,16 @@ endif()
 # points loaded at runtime via hostfxr. Output always goes to sct_bridge/ so
 # the post-build step can copy it to whichever config the exe landed in.
 
-set(SCT_BRIDGE_CSPROJ "${CMAKE_SOURCE_DIR}/sct-bridge/SctBridge.csproj")
 set(SCT_BRIDGE_OUT_DIR "${CMAKE_BINARY_DIR}/sct_bridge")
+
+# Generate the .csproj into the build tree so VS doesn't pick it up as a
+# standalone project target from the source tree.
+set(SCT_BRIDGE_CSPROJ "${CMAKE_BINARY_DIR}/sct-bridge/SctBridge.csproj")
+configure_file(
+    "${CMAKE_SOURCE_DIR}/sct-bridge/SctBridge.csproj.in"
+    "${SCT_BRIDGE_CSPROJ}"
+    @ONLY
+)
 
 add_custom_command(
     OUTPUT  "${SCT_BRIDGE_OUT_DIR}/SctBridge.dll"

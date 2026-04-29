@@ -111,6 +111,10 @@ void PluginBrowserPanel::Draw(AppState& state)
             DrawCellsTab(state);
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Exterior")) {
+            DrawExteriorTab(state);
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
 
@@ -450,5 +454,141 @@ void PluginBrowserPanel::DrawCellsTab(AppState& state)
     if (cellErr_[0]) {
         ImGui::Spacing();
         ImGui::TextColored({1.f, 0.4f, 0.4f, 1.f}, "%s", cellErr_);
+    }
+}
+
+// ── Exterior tab ──────────────────────────────────────────────────────────────
+
+void PluginBrowserPanel::DrawExteriorTab(AppState& state)
+{
+    ImGui::Spacing();
+
+    // Current exterior cell status
+    if (state.loadedCell.loaded && state.loadedCell.isExterior) {
+        ImGui::TextDisabled("Loaded:");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(state.loadedCell.name.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d refs)", (int)state.loadedCell.refs.size());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Unload##ext")) {
+            state.UnloadCell();
+            state.PushToast("Cell unloaded", ToastLevel::Info);
+        }
+    } else {
+        ImGui::TextDisabled("No exterior cell loaded");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ── Worldspace search ─────────────────────────────────────────────────────
+    ImGui::TextDisabled("Worldspace:");
+    ImGui::SetNextItemWidth(-55.f);
+    const bool hitEnter = ImGui::InputTextWithHint(
+        "##ws_srch", "Name or EditorID\xe2\x80\xa6",
+        wsSearchBuf_, sizeof(wsSearchBuf_),
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    const bool doSearch = hitEnter || ImGui::Button("Go##ws", {-1.f, 0.f});
+
+    if (doSearch) {
+        selectedWs_ = -1;
+        wsErr_[0]   = '\0';
+        wsResults_.clear();
+
+        std::string jsonStr;
+        if (DotNetHost::WorldspaceSearch(wsSearchBuf_, 50, jsonStr,
+                                         wsErr_, sizeof(wsErr_))) {
+            try {
+                using json = nlohmann::json;
+                for (const auto& j : json::parse(jsonStr)) {
+                    WorldspaceRecord r;
+                    r.formKey      = j.value("formKey",      std::string{});
+                    r.editorId     = j.value("editorId",     std::string{});
+                    r.name         = j.value("name",         std::string{});
+                    r.pluginSource = j.value("pluginSource", std::string{});
+                    if (!r.formKey.empty())
+                        wsResults_.push_back(std::move(r));
+                }
+            } catch (const std::exception& e) {
+                std::snprintf(wsErr_, sizeof(wsErr_), "JSON parse error: %s", e.what());
+                wsResults_.clear();
+            }
+        }
+    }
+
+    if (wsErr_[0]) {
+        ImGui::TextColored({1.f, 0.4f, 0.4f, 1.f}, "%s", wsErr_);
+        ImGui::Spacing();
+    }
+
+    // Worldspace results list
+    ImGui::BeginChild("##ws_results", {-1.f, 80.f}, true);
+    for (int i = 0; i < (int)wsResults_.size(); i++) {
+        const WorldspaceRecord& r = wsResults_[i];
+        const char* label = r.name.empty() ? r.editorId.c_str() : r.name.c_str();
+        char fullLabel[320];
+        std::snprintf(fullLabel, sizeof(fullLabel), "%s##ws%d", label, i);
+        bool sel = (selectedWs_ == i);
+        if (ImGui::Selectable(fullLabel, sel))
+            selectedWs_ = i;
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            if (!r.editorId.empty())     ImGui::TextDisabled("EditorID: %s", r.editorId.c_str());
+            if (!r.pluginSource.empty()) ImGui::TextDisabled("Source:   %s", r.pluginSource.c_str());
+            ImGui::TextDisabled("FormKey:  %s", r.formKey.c_str());
+            ImGui::EndTooltip();
+        }
+        if (!r.pluginSource.empty()) {
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x
+                            - ImGui::CalcTextSize(r.pluginSource.c_str()).x);
+            ImGui::TextDisabled("%s", r.pluginSource.c_str());
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ── Cell coordinates ──────────────────────────────────────────────────────
+    ImGui::TextDisabled("Cell X:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70.f);
+    ImGui::InputInt("##ext_cx", &exteriorCellX_, 0, 0);
+    ImGui::SameLine();
+    ImGui::TextDisabled("Y:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70.f);
+    ImGui::InputInt("##ext_cy", &exteriorCellY_, 0, 0);
+
+    ImGui::Spacing();
+
+    const bool canLoad = (selectedWs_ >= 0 && selectedWs_ < (int)wsResults_.size());
+    if (!canLoad) ImGui::BeginDisabled();
+
+    if (ImGui::Button("Load Exterior Cell", {-1.f, 0.f}) && canLoad) {
+        exteriorErr_[0] = '\0';
+        const WorldspaceRecord& ws = wsResults_[selectedWs_];
+        const char* wsName = ws.name.empty() ? ws.editorId.c_str() : ws.name.c_str();
+        char cellName[256];
+        std::snprintf(cellName, sizeof(cellName), "%s [%d, %d]",
+                      wsName, exteriorCellX_, exteriorCellY_);
+        if (state.LoadExteriorCell(ws.formKey.c_str(), exteriorCellX_, exteriorCellY_,
+                                   cellName, exteriorErr_, sizeof(exteriorErr_))) {
+            char msg[256];
+            std::snprintf(msg, sizeof(msg), "Exterior cell loaded — %d refs",
+                          (int)state.loadedCell.refs.size());
+            state.PushToast(msg, ToastLevel::Info);
+        }
+    }
+
+    if (!canLoad) ImGui::EndDisabled();
+
+    if (exteriorErr_[0]) {
+        ImGui::Spacing();
+        ImGui::TextColored({1.f, 0.4f, 0.4f, 1.f}, "%s", exteriorErr_);
     }
 }

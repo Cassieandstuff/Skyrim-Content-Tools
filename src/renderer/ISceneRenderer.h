@@ -20,19 +20,24 @@ struct MeshData {
     std::vector<glm::vec3>   positions;
     std::vector<glm::vec3>   normals;
     std::vector<glm::vec2>   uvs;
-    std::vector<glm::u8vec4> boneIndices;  // 4 indices per vertex (uint8)
-    std::vector<glm::vec4>   boneWeights;  // 4 weights per vertex, sum == 1
+    std::vector<glm::u8vec4> boneIndices;   // 4 indices per vertex (uint8)
+    std::vector<glm::vec4>   boneWeights;   // 4 weights per vertex, sum == 1
+    std::vector<glm::u8vec3> vertexColors;  // optional RGB per vertex (0-255)
     std::vector<uint16_t>    indices;
 };
 
 // ── Per-draw surface parameters ───────────────────────────────────────────────
 struct DrawSurface {
-    enum class BlendMode { Opaque, AlphaTest, AlphaBlend, Additive };
+    // AlphaTestAndBlend: discard fragments below alphaThreshold AND blend remaining
+    // pixels (depth write off) — matches NifSkope's independent glEnable(GL_BLEND) +
+    // glEnable(GL_ALPHA_TEST) when both NiAlphaProperty bits 0 and 9 are set.
+    enum class BlendMode { Opaque, AlphaTest, AlphaBlend, Additive, AlphaTestAndBlend };
 
     TextureHandle diffuse         = TextureHandle::Invalid;
     glm::vec4     tint            = { 1.f, 1.f, 1.f, 1.f };
     bool          wireframe       = false;
     bool          xray            = false;
+    bool          useVertexColor  = false;   // use per-vertex RGB from location 5 as base color
     BlendMode     blendMode       = BlendMode::Opaque;
     float         alphaThreshold  = 0.5f;   // normalised; only used for AlphaTest mode
 };
