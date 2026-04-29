@@ -84,6 +84,22 @@ void InspectorPanel::DrawSceneProperties(AppState& state)
     }
 
     ImGui::Spacing();
+    ImGui::SeparatorText("Lighting");
+
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::SliderFloat("Azimuth##lt",   &state.lightAzimuth,   0.f,   360.f, "%.1f°"))
+        state.SaveSettings();
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::SliderFloat("Elevation##lt", &state.lightElevation, -90.f,  90.f, "%.1f°"))
+        state.SaveSettings();
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::ColorEdit3("Light##lt",   state.lightColor,   ImGuiColorEditFlags_Float))
+        state.SaveSettings();
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::ColorEdit3("Ambient##lt", state.ambientColor, ImGuiColorEditFlags_Float))
+        state.SaveSettings();
+
+    ImGui::Spacing();
     ImGui::SeparatorText("Stats");
 
     const float seqDur = state.sequence.Duration();

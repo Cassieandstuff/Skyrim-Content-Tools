@@ -185,9 +185,9 @@ if (loopWas) ImGui::PopStyleColor();
 
 **Axis gizmo math**: `glm::mat4 view = camera_.View()` is column-major. `view[col][row]`. World axis X maps to screen as `(view[0][0], -view[0][1])`, Y as `(view[1][0], -view[1][1])`, Z as `(view[2][0], -view[2][1])`.
 
-**Coordinate system contract**: World space is Y-up, Z-forward (character faces +Z). `Pose::SolveFK` maps Havok bone positions as `worldPos = (x, z_havok, y_havok)` (YZ-swap, since Havok is Z-up/Y-forward). `kNifToWorld` in **ViewportPanel** uses the same YZ-swap permutation matrix (col-major: col1=(0,0,1,0), col2=(0,1,0,0)) so NIF meshes face the same direction as the skeleton. The NIF editor (`NifEditorState`) uses a different `-90° around X` rotation since it displays NIFs without a skeleton reference.
+**Coordinate system**: SCT world space is **Skyrim/Havok Z-up** (X=east, Y=north, Z=up). NIF vertex data, Havok bone transforms, and REFR placement records are all in this same space — no axis conversion is ever needed between them. The camera is configured with `up=(0,0,1)` so OpenGL renders the Z-up scene correctly. `Pose::SolveFK` writes `worldPos[i] = (wT.x, wT.y, wT.z)` directly (no swap). There is no `kNifToWorld` matrix.
 
-**Cell REFR Euler order**: Skyrim/Havok uses **extrinsic ZYX** (yaw applied first in world space, then pitch, then roll). As a column-vector matrix product: `R = Rx(rotX) * Ry(rotY) * Rz(rotZ)`. For objects with only `rotZ ≠ 0` (most floor furniture), both orderings are identical. The difference only appears for compound rotations (wall mounts, ceiling fixtures, tilted props). The cell placement transform is `kNifToWorld * T * Rx * Ry * Rz * S` with positions swapped `(posX, posY, posZ)` in Skyrim space — kNifToWorld converts the whole to world Y-up.
+**Cell REFR placement**: `T(posX, posY, posZ) * Rx(rotX) * Ry(rotY) * Rz(rotZ) * S` — values used directly from the ESM record, no sign changes, no axis remapping. Extrinsic ZYX order: Rz (yaw around world Z-up) applied first, column-vector form R = Rx·Ry·Rz.
 
 **DockBuilder layout** (`SetupDefaultLayout`): Scene Editor top(65%) = Bin|SceneGraph|Viewport; bottom(35%) = Timeline|Inspector. Workflow = Plugin Browser fills full space.
 

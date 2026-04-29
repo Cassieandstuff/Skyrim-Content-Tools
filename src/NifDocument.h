@@ -25,6 +25,13 @@ struct SkinBoneBinding {
     glm::mat4   inverseBindMatrix{ 1.f }; // NIF skin space → bone local space
 };
 
+// Alpha rendering mode decoded from NiAlphaProperty flags.
+// Opaque:    no alpha property, or blending/testing both disabled.
+// AlphaTest: bit 9 set — discard fragments below threshold (depth write stays on).
+// AlphaBlend: bit 0 set, standard src=SRC_ALPHA / dst=ONE_MINUS_SRC_ALPHA.
+// Additive:  bit 0 set, dst blend factor == ONE (fire, glows, particles).
+enum class NifAlphaMode { Opaque, AlphaTest, AlphaBlend, Additive };
+
 // Geometry for one renderable shape.
 // Vertex positions are stored in LOCAL shape space.
 // To render static:  apply block.toRoot then kNifToWorld.
@@ -33,6 +40,9 @@ struct NifDocShape {
     int         blockIndex;   // → NifDocument::blocks[blockIndex]
     MeshData    meshData;     // boneIndices/boneWeights filled iff isSkinned
     std::string diffusePath;  // relative texture path, e.g. "textures/actors/…_d.dds"
+
+    NifAlphaMode alphaMode      = NifAlphaMode::Opaque;
+    float        alphaThreshold = 0.5f;  // normalised (0-1); from NiAlphaProperty::threshold/255
 
     bool                         isSkinned = false;
     std::vector<SkinBoneBinding> skinBindings; // indexed by skin-local bone index

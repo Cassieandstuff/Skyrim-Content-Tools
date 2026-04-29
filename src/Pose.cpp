@@ -19,8 +19,8 @@ void Pose::SolveFK()
             wT[i] = wR[p] * channels[i].localT + wT[p];
             wR[i] = wR[p] * channels[i].localR;
         }
-        // Havok Z-up → viewport Y-up (for skeleton overlay / FrameAll)
-        worldPos[i] = glm::vec3(wT[i].x, wT[i].z, wT[i].y);
+        // SCT world is Z-up (same as Havok/Skyrim) — no axis conversion needed.
+        worldPos[i] = glm::vec3(wT[i].x, wT[i].y, wT[i].z);
 
         // Full 4x4 world matrix in NIF/Havok Z-up space, used for LBS skinning.
         // skinMat[j] = kNifToWorld * boneWorldMat[skelBoneIdx] * inverseBindMatrix

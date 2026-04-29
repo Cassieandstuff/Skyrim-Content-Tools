@@ -1,9 +1,14 @@
 #pragma once
 #include "ui/IPanel.h"
+#include "AppState.h"
 #include "Camera.h"
 #include "Pose.h"
 #include "renderer/ISceneRenderer.h"
+#include <atomic>
 #include <map>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -50,6 +55,21 @@ private:
     // ── Camera ────────────────────────────────────────────────────────────────
     Camera  camera_;
 
+    // ── Cell background streaming ─────────────────────────────────────────────
+    // Workers produce these on background threads; the main thread drains them
+    // and does the GL uploads.  No GL handles — pure data.
+    struct PendingShape {
+        std::string            baseFormKey;
+        MeshData               meshData;
+        glm::mat4              toRoot         = glm::mat4(1.f);
+        glm::vec3              localMin       = glm::vec3(0.f);
+        glm::vec3              localMax       = glm::vec3(0.f);
+        std::string            diffusePath;   // normalised lowercase key
+        std::vector<uint8_t>   ddsBytes;      // pre-extracted; empty = miss
+        DrawSurface::BlendMode blendMode      = DrawSurface::BlendMode::Opaque;
+        float                  alphaThreshold = 0.5f;
+    };
+
     // ── Per-actor render cache ────────────────────────────────────────────────
 
     // Resolved skin binding for one mesh: maps skin-local bone indices to
@@ -69,11 +89,13 @@ private:
     // ── Cell render cache ─────────────────────────────────────────────────────
     // One GPU shape from a base-object NIF (STAT/MSTT/FURN/etc.).
     struct CellShapeEntry {
-        MeshHandle    mesh     = MeshHandle::Invalid;
-        TextureHandle texture  = TextureHandle::Invalid;
-        glm::mat4     toRoot   = glm::mat4(1.f);   // shape → NIF-root transform
-        glm::vec3     localMin = glm::vec3(0.f);   // local-space AABB for picking
-        glm::vec3     localMax = glm::vec3(0.f);
+        MeshHandle              mesh           = MeshHandle::Invalid;
+        TextureHandle           texture        = TextureHandle::Invalid;
+        glm::mat4               toRoot         = glm::mat4(1.f);
+        glm::vec3               localMin       = glm::vec3(0.f);
+        glm::vec3               localMax       = glm::vec3(0.f);
+        DrawSurface::BlendMode  blendMode      = DrawSurface::BlendMode::Opaque;
+        float                   alphaThreshold = 0.5f;
     };
 
     // All shapes belonging to one unique base object, keyed by baseFormKey.
@@ -110,15 +132,31 @@ private:
     std::string                             cellLoadedKey_;
     std::map<std::string, CellCatalogEntry> cellMeshCatalog_; // baseFormKey → shapes
     std::vector<CellInstance>               cellInstances_;
+    // Texture dedup cache: lowercase-normalised diffuse path → GPU handle.
+    // Shapes reference handles here but don't own them; FreeCellCache frees this map.
+    std::unordered_map<std::string, TextureHandle> cellTexCache_;
+
+    // Streaming thread and its shared state.
+    std::thread               cellStream_;
+    std::atomic<bool>         cellStreamCancel_{false};
+    std::atomic<bool>         cellStreaming_{false};   // true while worker is running
+    std::atomic<int>          cellStreamTotal_{0};     // refs submitted to worker
+    std::atomic<int>          cellStreamDone_{0};      // refs the worker has finished
+    std::mutex                cellStreamMtx_;
+    std::vector<PendingShape> cellStreamPending_;      // worker pushes, main drains
 
     // ── Internals ─────────────────────────────────────────────────────────────
     void RebuildActorCache(AppState& state);
     void SyncNifHandles(AppState& state);  // re-uploads if nifPath changed
-    void SyncCellMeshes(AppState& state);  // rebuild cell GPU cache when loadedCell changes
-    void FreeCellCache();                   // free all cell GPU resources
+    void SyncCellMeshes(AppState& state);  // detect cell change, launch stream
+    void FreeCellCache();                   // cancel stream + free all GPU resources
     void SyncMorphs(AppState& state);      // applies ARKit blend-shape weights to face meshes
     void EvaluatePoses(AppState& state);
     void FrameAll();
     // Ray-cast picking: returns index into loadedCell.refs, or -1.
     int  PickCellRef(float ndcX, float ndcY, float aspect) const;
+    // Background worker: resolves + parses NIFs, pushes PendingShapes.
+    void StreamWorker(std::string dataFolder,
+                      std::vector<std::string> bsaSearchList,
+                      std::vector<CellPlacedRef> refs);
 };

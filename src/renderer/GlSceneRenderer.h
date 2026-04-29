@@ -35,6 +35,10 @@ public:
     TextureHandle LoadTextureFromMemory(const std::vector<uint8_t>& bytes) override;
     void          FreeTexture         (TextureHandle handle) override;
 
+    void SetLight(const glm::vec3& dir,
+                  const glm::vec3& color,
+                  const glm::vec3& ambient) override;
+
     void DrawGrid(float cellSize, int halfExtent) override;
     void DrawSkeleton(const Skeleton& skel, const Pose& pose,
                       const glm::mat4& world) override;
@@ -101,4 +105,9 @@ private:
     // ── Camera ────────────────────────────────────────────────────────────────
     glm::mat4 m_view { 1.f };
     glm::mat4 m_proj { 1.f };
+
+    // ── Scene light ───────────────────────────────────────────────────────────
+    glm::vec3 m_lightDir     { 0.371f, 0.928f, 0.0f };  // defaults set by first SetLight()
+    glm::vec3 m_lightColor   { 1.0f,  0.98f, 0.92f };
+    glm::vec3 m_ambientColor { 0.12f, 0.13f, 0.18f };
 };

@@ -13,15 +13,16 @@ struct Camera {
     glm::vec3 Eye() const {
         float az = glm::radians(azimuth);
         float el = glm::radians(elevation);
+        // Skyrim / SCT world is Z-up: azimuth rotates in XY plane, elevation lifts along Z.
         return target + glm::vec3(
             radius * std::cos(el) * std::sin(az),
-            radius * std::sin(el),
-            radius * std::cos(el) * std::cos(az)
+            radius * std::cos(el) * std::cos(az),
+            radius * std::sin(el)
         );
     }
 
     glm::mat4 View() const {
-        return glm::lookAt(Eye(), target, glm::vec3(0, 1, 0));
+        return glm::lookAt(Eye(), target, glm::vec3(0, 0, 1));
     }
 
     glm::mat4 Proj(float aspect) const {
@@ -40,7 +41,7 @@ struct Camera {
     void Pan(float dx, float dy) {
         glm::vec3 eye     = Eye();
         glm::vec3 forward = glm::normalize(target - eye);
-        glm::vec3 right   = glm::normalize(glm::cross(forward, glm::vec3(0, 1, 0)));
+        glm::vec3 right   = glm::normalize(glm::cross(forward, glm::vec3(0, 0, 1)));
         glm::vec3 up      = glm::cross(right, forward);
         float     scale   = radius * 0.001f;
         target -= right * (dx * scale) + up * (dy * scale);

@@ -1,5 +1,6 @@
 #include "ViewportPanel.h"
 #include "AppState.h"
+#include "BsaReader.h"
 #include "NifDocument.h"
 #include "Sequence.h"
 #include "HavokSkeleton.h"
@@ -8,18 +9,15 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <memory>
+#include <unordered_set>
 
-// ── Coordinate conversion ─────────────────────────────────────────────────────
-// NIF / Havok space is Z-up, Y-forward.  SCT world space is Y-up, Z-forward.
-// Column-major: col1 = NIF-Y→world-Z, col2 = NIF-Z→world-Y.
-// Used by both actor NIF rendering and cell placed-object rendering.
-static const glm::mat4 kNifToWorld = glm::mat4(
-    glm::vec4(1, 0, 0, 0),   // NIF X  → world X
-    glm::vec4(0, 0, 1, 0),   // NIF Y (forward) → world Z
-    glm::vec4(0, 1, 0, 0),   // NIF Z (up)      → world Y
-    glm::vec4(0, 0, 0, 1)
-);
+// SCT world space is Skyrim/Havok Z-up (X=east, Y=north, Z=up).
+// No coordinate conversion is needed between NIF/Havok data and world space —
+// they are the same coordinate system.  The camera is configured with Z as up.
 
 // ── Construction ──────────────────────────────────────────────────────────────
 
@@ -34,6 +32,10 @@ ViewportPanel::ViewportPanel(std::vector<ViewportTabDef> tabs, ISceneRenderer& r
 
 ViewportPanel::~ViewportPanel()
 {
+    // Stop any background stream before releasing GPU resources.
+    cellStreamCancel_ = true;
+    if (cellStream_.joinable()) cellStream_.join();
+
     for (auto& ar : actorCache_) {
         for (MeshHandle    h : ar.meshHandles)    renderer_.FreeMesh(h);
         for (TextureHandle t : ar.textureHandles) renderer_.FreeTexture(t);
@@ -47,11 +49,24 @@ int ViewportPanel::PickCellRef(float ndcX, float ndcY, float aspect) const
 {
     if (cellInstances_.empty()) return -1;
 
-    const glm::mat4 VP    = camera_.Proj(aspect) * camera_.View();
-    const glm::mat4 invVP = glm::inverse(VP);
-    const glm::vec4 far4  = invVP * glm::vec4(ndcX, ndcY, 1.f, 1.f);
-    const glm::vec3 rayO  = camera_.Eye();
-    const glm::vec3 rayD  = glm::normalize(glm::vec3(far4) / far4.w - rayO);
+    // Build ray analytically from camera parameters — avoids inverting VP,
+    // which is numerically unstable with large Skyrim-scale coordinates and
+    // the extreme far/near ratio (5,000,000 / 0.1) used by the camera.
+    //
+    // View-space ray direction for NDC pixel (ndcX, ndcY):
+    //   x_v = ndcX / proj[0][0]   (proj[0][0] = f/aspect)
+    //   y_v = ndcY / proj[1][1]   (proj[1][1] = f)
+    //   z_v = -1                  (OpenGL: -Z into screen)
+    // Transform to world: right * x_v + up * y_v + forward.
+    const glm::mat4 proj  = camera_.Proj(aspect);
+    const glm::vec3 eye   = camera_.Eye();
+    const glm::vec3 fwd   = glm::normalize(camera_.target - eye);
+    const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.f, 0.f, 1.f)));
+    const glm::vec3 up    = glm::cross(right, fwd);
+    const float     xv    = ndcX / proj[0][0];
+    const float     yv    = ndcY / proj[1][1];
+    const glm::vec3 rayO  = eye;
+    const glm::vec3 rayD  = glm::normalize(right * xv + up * yv + fwd);
 
     float bestT  = FLT_MAX;
     int   bestRef = -1;
@@ -184,8 +199,52 @@ void ViewportPanel::Draw(AppState& state)
     const glm::mat4 proj = camera_.Proj(size.x / size.y);
     const glm::mat4 view = camera_.View();
 
+    // ── Drain streamed assets from worker thread — GL uploads on main thread ──
+    // Check the atomic flag first to skip the lock when there's nothing to do.
+    if (cellStreaming_ || cellStreamDone_ > 0) {
+        std::vector<PendingShape> batch;
+        { std::lock_guard<std::mutex> lk(cellStreamMtx_);
+          batch.swap(cellStreamPending_); }
+
+        for (auto& ps : batch) {
+            CellShapeEntry se;
+            se.toRoot         = ps.toRoot;
+            se.localMin       = ps.localMin;
+            se.localMax       = ps.localMax;
+            se.blendMode      = ps.blendMode;
+            se.alphaThreshold = ps.alphaThreshold;
+            se.mesh           = renderer_.UploadMesh(ps.meshData);
+
+            if (!ps.diffusePath.empty()) {
+                auto it = cellTexCache_.find(ps.diffusePath);
+                if (it != cellTexCache_.end()) {
+                    se.texture = it->second;  // reuse already-uploaded texture
+                } else {
+                    TextureHandle th = TextureHandle::Invalid;
+                    if (!ps.ddsBytes.empty())
+                        th = renderer_.LoadTextureFromMemory(ps.ddsBytes);
+                    cellTexCache_[ps.diffusePath] = th;
+                    se.texture = th;
+                }
+            }
+            cellMeshCatalog_[ps.baseFormKey].shapes.push_back(std::move(se));
+        }
+    }
+
     renderer_.BeginFrame(iw, ih);
     renderer_.SetCamera(view, proj);
+
+    {
+        const float az = glm::radians(state.lightAzimuth);
+        const float el = glm::radians(state.lightElevation);
+        const glm::vec3 dir = glm::normalize(glm::vec3(
+            std::cos(el) * std::sin(az),
+            std::cos(el) * std::cos(az),
+            std::sin(el)));
+        renderer_.SetLight(dir,
+            glm::vec3(state.lightColor[0],   state.lightColor[1],   state.lightColor[2]),
+            glm::vec3(state.ambientColor[0], state.ambientColor[1], state.ambientColor[2]));
+    }
 
     if (mode_ == ViewportMode::Scene) {
         float unit = 1.f;
@@ -195,23 +254,37 @@ void ViewportPanel::Draw(AppState& state)
 
         // kNifToWorld defined at file scope above — converts NIF/Havok Z-up to Y-up world.
 
-        // ── Cell environment ──────────────────────────────────────────────────
-        for (const auto& inst : cellInstances_) {
-            auto it = cellMeshCatalog_.find(inst.baseFormKey);
-            if (it == cellMeshCatalog_.end()) continue;
+        // ── Cell environment — two-pass to avoid blended surfaces writing depth ──
+        // Pass 1: opaque + alpha-test (depth write on, full depth rejection)
+        // Pass 2: alpha-blend + additive (depth write off, blended on top)
+        auto drawCellShape = [&](const CellInstance& inst, const CellShapeEntry& shape,
+                                 bool pass2) {
+            if (shape.mesh == MeshHandle::Invalid) return;
+            const bool isBlended = (shape.blendMode == DrawSurface::BlendMode::AlphaBlend ||
+                                    shape.blendMode == DrawSurface::BlendMode::Additive);
+            if (isBlended != pass2) return;
+
             const bool selected = (inst.refIndex == state.selectedCellRefIndex);
-            for (const auto& shape : it->second.shapes) {
-                if (shape.mesh == MeshHandle::Invalid) continue;
-                DrawSurface surf;
-                surf.diffuse = shape.texture;
-                if (selected) {
-                    surf.tint = glm::vec4(1.f, 0.65f, 0.1f, 1.f);  // orange highlight
-                } else {
-                    surf.tint = (shape.texture != TextureHandle::Invalid)
-                        ? glm::vec4(1.f, 1.f, 1.f, 1.f)
-                        : glm::vec4(0.70f, 0.70f, 0.75f, 1.f);
-                }
-                renderer_.DrawMesh(shape.mesh, inst.placement * shape.toRoot, surf);
+            DrawSurface surf;
+            surf.diffuse        = shape.texture;
+            surf.blendMode      = shape.blendMode;
+            surf.alphaThreshold = shape.alphaThreshold;
+            if (selected) {
+                surf.tint = glm::vec4(1.f, 0.65f, 0.1f, 1.f);
+            } else {
+                surf.tint = (shape.texture != TextureHandle::Invalid)
+                    ? glm::vec4(1.f, 1.f, 1.f, 1.f)
+                    : glm::vec4(0.70f, 0.70f, 0.75f, 1.f);
+            }
+            renderer_.DrawMesh(shape.mesh, inst.placement * shape.toRoot, surf);
+        };
+
+        for (int pass = 0; pass < 2; ++pass) {
+            for (const auto& inst : cellInstances_) {
+                auto it = cellMeshCatalog_.find(inst.baseFormKey);
+                if (it == cellMeshCatalog_.end()) continue;
+                for (const auto& shape : it->second.shapes)
+                    drawCellShape(inst, shape, pass == 1);
             }
         }
 
@@ -239,15 +312,14 @@ void ViewportPanel::Draw(AppState& state)
                     for (int j = 0; j < numSkinBones; j++) {
                         const int si = msb->skelBoneIdx[j];
                         if (si >= 0 && si < (int)cache.pose.boneWorldMat.size())
-                            skinMats[j] = kNifToWorld
-                                        * cache.pose.boneWorldMat[si]
+                            skinMats[j] = cache.pose.boneWorldMat[si]
                                         * msb->inverseBindMats[j];
                     }
                     renderer_.DrawSkinnedMesh(cache.meshHandles[mi],
                                              glm::mat4(1.f), skinMats, surf);
                 } else {
-                    // Static path: apply per-mesh toRoot then coordinate conversion.
-                    const glm::mat4 model = kNifToWorld * cache.meshTransforms[mi];
+                    // Static path: apply per-mesh toRoot (NIF and world share Z-up space).
+                    const glm::mat4 model = cache.meshTransforms[mi];
                     renderer_.DrawMesh(cache.meshHandles[mi], model, surf);
                 }
             }
@@ -285,7 +357,8 @@ void ViewportPanel::Draw(AppState& state)
             !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 3.f)) {
             const float ndcX = 2.f * (io.MousePos.x - imgMin.x) / size.x - 1.f;
             const float ndcY = 1.f - 2.f * (io.MousePos.y - imgMin.y) / size.y;
-            state.selectedCellRefIndex = PickCellRef(ndcX, ndcY, size.x / size.y);
+            const int picked = PickCellRef(ndcX, ndcY, size.x / size.y);
+            state.selectedCellRefIndex = picked;
         }
     }
 
@@ -328,6 +401,31 @@ void ViewportPanel::Draw(AppState& state)
             dl->AddRectFilled({bx - 6, by - 4}, {bx + ts.x + 6, by + ts.y + 4},
                               IM_COL32(8, 10, 16, 180), 4.f);
             dl->AddText({bx, by}, badgeC, badge);
+
+            // Cell stream progress bar — bottom centre, visible while loading.
+            if (cellStreaming_ || cellStreamDone_ < cellStreamTotal_) {
+                const int   total = cellStreamTotal_.load();
+                const int   done  = cellStreamDone_.load();
+                const float frac  = (total > 0) ? (float)done / (float)total : 0.f;
+                char label[48];
+                std::snprintf(label, sizeof(label), "Loading cell...  %d / %d", done, total);
+                const ImVec2 lsz = ImGui::CalcTextSize(label);
+                const float  barW = size.x * 0.45f;
+                const float  barH = 4.f;
+                const float  cx   = imgMin.x + size.x * 0.5f;
+                const float  py   = imgMin.y + size.y - 22.f;
+                // Text
+                dl->AddText({ cx - lsz.x * 0.5f, py - lsz.y - 2.f },
+                            IM_COL32(200, 200, 210, 200), label);
+                // Track
+                dl->AddRectFilled({ cx - barW * 0.5f, py },
+                                  { cx + barW * 0.5f, py + barH },
+                                  IM_COL32(40, 42, 50, 200), 2.f);
+                // Fill
+                dl->AddRectFilled({ cx - barW * 0.5f, py },
+                                  { cx - barW * 0.5f + barW * frac, py + barH },
+                                  IM_COL32(80, 160, 240, 220), 2.f);
+            }
         }
     }
 
@@ -553,150 +651,198 @@ void ViewportPanel::SyncMorphs(AppState& state)
 
 void ViewportPanel::FreeCellCache()
 {
-    for (auto& [key, entry] : cellMeshCatalog_) {
-        for (auto& shape : entry.shapes) {
-            if (shape.mesh    != MeshHandle::Invalid)    renderer_.FreeMesh(shape.mesh);
-            if (shape.texture != TextureHandle::Invalid) renderer_.FreeTexture(shape.texture);
-        }
-    }
+    // Signal and wait for the background stream to stop before touching GPU resources.
+    cellStreamCancel_ = true;
+    if (cellStream_.joinable()) cellStream_.join();
+    cellStreamCancel_ = false;
+
+    // Discard any shapes the worker queued but we haven't uploaded yet.
+    { std::lock_guard<std::mutex> lk(cellStreamMtx_);
+      cellStreamPending_.clear(); }
+
+    for (auto& [key, entry] : cellMeshCatalog_)
+        for (auto& shape : entry.shapes)
+            if (shape.mesh != MeshHandle::Invalid) renderer_.FreeMesh(shape.mesh);
+
+    // Textures are owned by cellTexCache_, not by individual shapes.
+    for (auto& [path, tex] : cellTexCache_)
+        if (tex != TextureHandle::Invalid) renderer_.FreeTexture(tex);
+
+    cellTexCache_.clear();
     cellMeshCatalog_.clear();
     cellInstances_.clear();
     cellLoadedKey_.clear();
+    cellStreamTotal_ = 0;
+    cellStreamDone_  = 0;
+    cellStreaming_    = false;
 }
 
 void ViewportPanel::SyncCellMeshes(AppState& state)
 {
-    // Compute the key representing the currently desired cell state.
     const std::string newKey = state.loadedCell.loaded
-                             ? state.loadedCell.formKey
-                             : std::string{};
+                             ? state.loadedCell.formKey : std::string{};
+    if (newKey == cellLoadedKey_) return;
 
-    if (newKey == cellLoadedKey_) return;   // no change
-
-    FreeCellCache();                         // releases old GPU resources
+    FreeCellCache();   // cancels + joins any old stream, frees GPU resources
     cellLoadedKey_ = newKey;
 
     if (state.loadedCell.Empty()) return;
 
-    fprintf(stderr, "[Cell] Building render cache for '%s' (%d refs)...\n",
-            state.loadedCell.name.c_str(), (int)state.loadedCell.refs.size());
+    const int numRefs = (int)state.loadedCell.refs.size();
+    fprintf(stderr, "[Cell] Streaming '%s' (%d refs)...\n",
+            state.loadedCell.name.c_str(), numRefs);
 
-    // NOTE: This is synchronous and will block for several seconds on large
-    // cells (e.g. Whiterun).  Async streaming is a future improvement.
-
-    for (int ri = 0; ri < (int)state.loadedCell.refs.size(); ++ri) {
+    // ── Build instance list synchronously — pure TRS math, no I/O ────────────
+    // NIF, Havok, and REFR data are all in the same Z-up coordinate system.
+    // Negate angles: Bethesda CW-positive vs GLM CCW-positive.
+    cellInstances_.reserve(numRefs);
+    for (int ri = 0; ri < numRefs; ++ri) {
         const auto& ref = state.loadedCell.refs[ri];
-
-        // ── Mesh catalog: one NIF upload per unique base object ───────────────
-        if (cellMeshCatalog_.find(ref.baseFormKey) == cellMeshCatalog_.end()) {
-            CellCatalogEntry entry;
-
-            NifDocument doc;
-            const bool isAbsolute =
-                (ref.nifPath.size() >= 2 && ref.nifPath[1] == ':') ||
-                (!ref.nifPath.empty() &&
-                 (ref.nifPath[0] == '/' || ref.nifPath[0] == '\\'));
-
-            if (isAbsolute) {
-                doc = LoadNifDocument(ref.nifPath);
-            } else {
-                std::vector<uint8_t> nifBytes;
-                if (state.ResolveAsset(ref.nifPath, nifBytes))
-                    doc = LoadNifDocumentFromBytes(nifBytes, ref.nifPath);
-            }
-
-            for (int si = 0; si < (int)doc.shapes.size(); si++) {
-                const NifDocShape& ds    = doc.shapes[si];
-                const NifBlock&    block = doc.blocks[ds.blockIndex];
-                if (ds.meshData.positions.empty()) continue;
-
-                CellShapeEntry se;
-                se.toRoot = block.toRoot;
-
-                // Local-space AABB for ray picking.
-                if (!ds.meshData.positions.empty()) {
-                    glm::vec3 lo( FLT_MAX), hi(-FLT_MAX);
-                    for (const auto& p : ds.meshData.positions) {
-                        lo = glm::min(lo, p);
-                        hi = glm::max(hi, p);
-                    }
-                    se.localMin = lo;
-                    se.localMax = hi;
-                }
-
-                se.mesh = renderer_.UploadMesh(ds.meshData);
-
-                // DEBUG: print full toRoot matrix for floor-cap + furniture
-                // pieces to see if toRoot has any rotation component.
-                if (ref.nifPath.find("FloorCap") != std::string::npos ||
-                    ref.nifPath.find("Furniture") != std::string::npos ||
-                    ref.nifPath.find("Alchemy")   != std::string::npos) {
-                    // GLM column-major: [col][row]. Print rotation columns 0,1,2.
-                    fprintf(stderr,
-                        "[ToRootFull] %-55s  shape=%-25s\n"
-                        "             col0=(%+.3f,%+.3f,%+.3f)  col1=(%+.3f,%+.3f,%+.3f)"
-                        "  col2=(%+.3f,%+.3f,%+.3f)  tr=(%+.1f,%+.1f,%+.1f)\n",
-                        ref.nifPath.c_str(), block.name.c_str(),
-                        block.toRoot[0][0], block.toRoot[0][1], block.toRoot[0][2],
-                        block.toRoot[1][0], block.toRoot[1][1], block.toRoot[1][2],
-                        block.toRoot[2][0], block.toRoot[2][1], block.toRoot[2][2],
-                        block.toRoot[3][0], block.toRoot[3][1], block.toRoot[3][2]);
-                }
-
-                if (!ds.diffusePath.empty()) {
-                    std::vector<uint8_t> texBytes;
-                    if (state.ResolveAsset(ds.diffusePath, texBytes))
-                        se.texture = renderer_.LoadTextureFromMemory(texBytes);
-                }
-                entry.shapes.push_back(std::move(se));
-            }
-
-            // Always insert (even if empty) to avoid retrying a failed NIF.
-            cellMeshCatalog_[ref.baseFormKey] = std::move(entry);
-        }
-
-        // ── Instance: placement transform (Skyrim Z-up → Y-up world) ─────────
-        // Skyrim REFR uses extrinsic ZYX: rotZ (yaw around world Z-up) is applied
-        // first to the vertex, then rotY, then rotX last.  Column-vector matrix
-        // form: R = Rx * Ry * Rz  (rightmost applied first).
-        //
-        // Sign correction: kNifToWorld is a YZ-swap with det = -1.  Direct
-        // calculation shows kNifToWorld * Rz(θ) acts as Ry(-θ) in world space,
-        // kNifToWorld * Rx(θ) acts as Rx(-θ), and kNifToWorld * Ry(θ) acts as
-        // Rz(-θ).  We pre-negate rotZ and rotY to compensate; rotX is left
-        // positive because the double-negation via det=-1 cancels out.
-        //
-        // Order matters for compound rotations: Rx * Rz keeps the up-vector
-        // (Z-axis) independent of the yaw (Rz doesn't rotate Z), so tilt and
-        // yaw decouple correctly.  Rz * Rx couples them and "swings" tilted
-        // pieces sideways.
-        const glm::mat4 S  = glm::scale(glm::mat4(1.f), glm::vec3(ref.scale));
-        const glm::mat4 Rx = glm::rotate(glm::mat4(1.f),  ref.rotX, glm::vec3(1.f, 0.f, 0.f));
-        const glm::mat4 Ry = glm::rotate(glm::mat4(1.f), -ref.rotY, glm::vec3(0.f, 1.f, 0.f));
-        const glm::mat4 Rz = glm::rotate(glm::mat4(1.f), -ref.rotZ, glm::vec3(0.f, 0.f, 1.f));
-        const glm::mat4 T  = glm::translate(glm::mat4(1.f),
-                                            glm::vec3(ref.posX, ref.posY, ref.posZ));
-        const glm::mat4 TRS = T * (Rx * Ry * Rz) * S;
-
-        // DEBUG: log refs with non-zero rotX/rotY to catch compound rotations.
-        if (fabsf(ref.rotX) > 0.01f || fabsf(ref.rotY) > 0.01f) {
-            fprintf(stderr, "[CellRot] nif=%-60s  pos=(%+8.1f,%+8.1f,%+8.1f)  rot=(%+.3f,%+.3f,%+.3f)\n",
-                    ref.nifPath.c_str(),
-                    ref.posX, ref.posY, ref.posZ,
-                    ref.rotX, ref.rotY, ref.rotZ);
-        }
-
-        cellInstances_.push_back({ ref.baseFormKey, kNifToWorld * TRS, ri });
+        const glm::mat4 S  = glm::scale    (glm::mat4(1.f), glm::vec3(ref.scale));
+        const glm::mat4 Rx = glm::rotate   (glm::mat4(1.f), -ref.rotX, glm::vec3(1,0,0));
+        const glm::mat4 Ry = glm::rotate   (glm::mat4(1.f), -ref.rotY, glm::vec3(0,1,0));
+        const glm::mat4 Rz = glm::rotate   (glm::mat4(1.f), -ref.rotZ, glm::vec3(0,0,1));
+        const glm::mat4 T  = glm::translate(glm::mat4(1.f), glm::vec3(ref.posX, ref.posY, ref.posZ));
+        cellInstances_.push_back({ ref.baseFormKey, T * (Rx * Ry * Rz) * S, ri });
     }
 
-    const int uniqueBases = (int)cellMeshCatalog_.size();
-    const int totalShapes = [&]{
-        int n = 0;
-        for (auto& [k, e] : cellMeshCatalog_) n += (int)e.shapes.size();
-        return n;
-    }();
-    fprintf(stderr, "[Cell] Done: %d unique bases, %d total shapes, %d instances\n",
-            uniqueBases, totalShapes, (int)cellInstances_.size());
+    // ── Snapshot state the worker needs — no AppState access after this ───────
+    cellStreamTotal_ = numRefs;
+    cellStreamDone_  = 0;
+    cellStreaming_    = true;
+
+    cellStream_ = std::thread(&ViewportPanel::StreamWorker, this,
+                              state.dataFolder,
+                              state.bsaSearchList,
+                              state.loadedCell.refs);
+}
+
+void ViewportPanel::StreamWorker(std::string dataFolder,
+                                 std::vector<std::string> bsaSearchList,
+                                 std::vector<CellPlacedRef> refs)
+{
+    // Pre-open all BSAs once so every resolve call reuses the cached index
+    // rather than re-reading the full index from disk on each lookup.
+    std::vector<std::unique_ptr<BsaReader>> openBsas;
+    openBsas.reserve(bsaSearchList.size());
+    for (const auto& bsaPath : bsaSearchList) {
+        auto bsa = std::make_unique<BsaReader>();
+        char err[256] = {};
+        if (bsa->Open(bsaPath, err, sizeof(err)))
+            openBsas.push_back(std::move(bsa));
+    }
+
+    // Thread-local resolve: mirrors AppState::ResolveAsset but uses captured
+    // snapshots so this thread never touches AppState after launch.
+    auto resolve = [&](const std::string& relPath,
+                       std::vector<uint8_t>& outBytes) -> bool
+    {
+        if (relPath.empty() || cellStreamCancel_) return false;
+        std::string rel = relPath;
+        for (char& c : rel) if (c == '\\') c = '/';
+
+        // Loose file first.
+        if (!dataFolder.empty()) {
+            std::ifstream f(dataFolder + "/" + rel, std::ios::binary);
+            if (f) {
+                outBytes.assign(std::istreambuf_iterator<char>(f), {});
+                return true;
+            }
+        }
+        // Walk pre-opened BSAs — index already in memory, O(1) hash lookup per BSA.
+        std::string bsaKey = rel;
+        for (char& c : bsaKey) if (c == '/') c = '\\';
+        for (char& c : bsaKey) c = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+
+        for (const auto& bsa : openBsas) {
+            if (cellStreamCancel_) return false;
+            const BsaFileInfo* fi = bsa->FindExact(bsaKey);
+            if (!fi) continue;
+            char xErr[256] = {};
+            if (bsa->Extract(*fi, outBytes, xErr, sizeof(xErr))) return true;
+        }
+        return false;
+    };
+
+    std::unordered_set<std::string> seenBases;
+
+    for (int ri = 0; ri < (int)refs.size(); ++ri) {
+        if (cellStreamCancel_) break;
+
+        const CellPlacedRef& ref = refs[ri];
+        ++cellStreamDone_;
+
+        if (seenBases.count(ref.baseFormKey)) continue; // already loaded successfully
+
+        // Resolve NIF bytes.
+        std::vector<uint8_t> nifBytes;
+        const bool isAbsolute = (ref.nifPath.size() >= 2 && ref.nifPath[1] == ':') ||
+                                (!ref.nifPath.empty() &&
+                                 (ref.nifPath[0] == '/' || ref.nifPath[0] == '\\'));
+        if (isAbsolute) {
+            std::ifstream f(ref.nifPath, std::ios::binary);
+            if (f) nifBytes.assign(std::istreambuf_iterator<char>(f), {});
+        } else {
+            resolve(ref.nifPath, nifBytes);
+        }
+        // Don't mark seen on NIF miss — a later ref with the same baseFormKey
+        // might carry a different nifPath that resolves.  Mark seen only after
+        // a successful load so the catalog-presence check mirrors the old
+        // synchronous behaviour (which retried until one ref succeeded).
+        if (nifBytes.empty() || cellStreamCancel_) continue;
+        seenBases.insert(ref.baseFormKey);
+
+        // Parse NIF — nifly is stateless, safe to call from any thread.
+        NifDocument doc = LoadNifDocumentFromBytes(nifBytes, ref.nifPath);
+        if (cellStreamCancel_) break;
+
+        // Build PendingShape list for this base object.
+        std::vector<PendingShape> batch;
+        for (int si = 0; si < (int)doc.shapes.size(); ++si) {
+            if (cellStreamCancel_) break;
+            const NifDocShape& ds    = doc.shapes[si];
+            const NifBlock&    block = doc.blocks[ds.blockIndex];
+            if (ds.meshData.positions.empty()) continue;
+
+            PendingShape ps;
+            ps.baseFormKey    = ref.baseFormKey;
+            ps.meshData       = ds.meshData;
+            ps.toRoot         = block.toRoot;
+            ps.alphaThreshold = ds.alphaThreshold;
+            switch (ds.alphaMode) {
+                case NifAlphaMode::AlphaTest:  ps.blendMode = DrawSurface::BlendMode::AlphaTest;  break;
+                case NifAlphaMode::AlphaBlend: ps.blendMode = DrawSurface::BlendMode::AlphaBlend; break;
+                case NifAlphaMode::Additive:   ps.blendMode = DrawSurface::BlendMode::Additive;   break;
+                default:                       ps.blendMode = DrawSurface::BlendMode::Opaque;     break;
+            }
+            // Local-space AABB for ray picking.
+            glm::vec3 lo(FLT_MAX), hi(-FLT_MAX);
+            for (const auto& p : ds.meshData.positions) {
+                lo = glm::min(lo, p);
+                hi = glm::max(hi, p);
+            }
+            ps.localMin = lo;
+            ps.localMax = hi;
+
+            // Resolve texture bytes (pre-extract here so main thread only uploads).
+            if (!ds.diffusePath.empty()) {
+                ps.diffusePath = ds.diffusePath;
+                for (char& c : ps.diffusePath)
+                    c = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
+                resolve(ds.diffusePath, ps.ddsBytes);
+            }
+            batch.push_back(std::move(ps));
+        }
+
+        if (!batch.empty() && !cellStreamCancel_) {
+            std::lock_guard<std::mutex> lk(cellStreamMtx_);
+            for (auto& ps : batch)
+                cellStreamPending_.push_back(std::move(ps));
+        }
+    }
+
+    cellStreaming_ = false;
+    fprintf(stderr, "[Cell] Stream finished: %d unique bases\n", (int)seenBases.size());
 }
 
 void ViewportPanel::EvaluatePoses(AppState& state)

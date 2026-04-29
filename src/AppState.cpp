@@ -856,6 +856,14 @@ void AppState::LoadSettings()
             dataFolder = val;
             ScanDataFolder();
         }
+        else if (key == "lightAzimuth")   { try { lightAzimuth   = std::stof(val); } catch(...){} }
+        else if (key == "lightElevation") { try { lightElevation = std::stof(val); } catch(...){} }
+        else if (key == "lightR")  { try { lightColor[0]   = std::stof(val); } catch(...){} }
+        else if (key == "lightG")  { try { lightColor[1]   = std::stof(val); } catch(...){} }
+        else if (key == "lightB")  { try { lightColor[2]   = std::stof(val); } catch(...){} }
+        else if (key == "ambientR") { try { ambientColor[0] = std::stof(val); } catch(...){} }
+        else if (key == "ambientG") { try { ambientColor[1] = std::stof(val); } catch(...){} }
+        else if (key == "ambientB") { try { ambientColor[2] = std::stof(val); } catch(...){} }
     }
 }
 
@@ -863,5 +871,13 @@ void AppState::SaveSettings() const
 {
     std::ofstream f("sct_settings.ini");
     if (!f) return;
-    f << "dataFolder=" << dataFolder << "\n";
+    f << "dataFolder="    << dataFolder    << "\n"
+      << "lightAzimuth="  << lightAzimuth  << "\n"
+      << "lightElevation="<< lightElevation<< "\n"
+      << "lightR="  << lightColor[0]   << "\n"
+      << "lightG="  << lightColor[1]   << "\n"
+      << "lightB="  << lightColor[2]   << "\n"
+      << "ambientR=" << ambientColor[0] << "\n"
+      << "ambientG=" << ambientColor[1] << "\n"
+      << "ambientB=" << ambientColor[2] << "\n";
 }

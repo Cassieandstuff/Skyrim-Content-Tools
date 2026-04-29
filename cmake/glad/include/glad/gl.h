@@ -85,6 +85,7 @@ typedef struct __GLsync *GLsync;
 #define GL_BLEND                          0x0BE2
 #define GL_SRC_ALPHA                      0x0302
 #define GL_ONE_MINUS_SRC_ALPHA            0x0303
+#define GL_ONE                            0x0001
 
 /* data types */
 #define GL_UNSIGNED_SHORT                 0x1403
@@ -205,8 +206,11 @@ typedef void   (APIENTRYP PFNGLGETPROGRAMINFOLOGPROC)(GLuint program, GLsizei bu
 typedef GLint  (APIENTRYP PFNGLGETUNIFORMLOCATIONPROC)(GLuint program, const GLchar* name);
 typedef void   (APIENTRYP PFNGLUNIFORM4FPROC)(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3);
 typedef void   (APIENTRYP PFNGLUNIFORM4FVPROC)(GLint location, GLsizei count, const GLfloat* value);
+typedef void   (APIENTRYP PFNGLUNIFORM3FVPROC)(GLint location, GLsizei count, const GLfloat* value);
 typedef void   (APIENTRYP PFNGLUNIFORM1IPROC)(GLint location, GLint v0);
+typedef void   (APIENTRYP PFNGLUNIFORM1FPROC)(GLint location, GLfloat v0);
 typedef void   (APIENTRYP PFNGLUNIFORMMATRIX4FVPROC)(GLint location, GLsizei count, GLboolean transpose, const GLfloat* value);
+typedef void   (APIENTRYP PFNGLDEPTHMASKPROC)(GLboolean flag);
 typedef GLboolean (APIENTRYP PFNGLISENABLED)(GLenum cap);
 
 /* framebuffer */
@@ -268,9 +272,12 @@ extern PFNGLGETPROGRAMIVPROC            glad_glGetProgramiv;
 extern PFNGLGETPROGRAMINFOLOGPROC       glad_glGetProgramInfoLog;
 extern PFNGLGETUNIFORMLOCATIONPROC      glad_glGetUniformLocation;
 extern PFNGLUNIFORM1IPROC               glad_glUniform1i;
+extern PFNGLUNIFORM1FPROC               glad_glUniform1f;
 extern PFNGLUNIFORM4FPROC               glad_glUniform4f;
 extern PFNGLUNIFORM4FVPROC              glad_glUniform4fv;
+extern PFNGLUNIFORM3FVPROC              glad_glUniform3fv;
 extern PFNGLUNIFORMMATRIX4FVPROC        glad_glUniformMatrix4fv;
+extern PFNGLDEPTHMASKPROC               glad_glDepthMask;
 extern PFNGLISENABLED                   glad_glIsEnabled;
 extern PFNGLGENFRAMEBUFFERSPROC         glad_glGenFramebuffers;
 extern PFNGLDELETEFRAMEBUFFERSPROC      glad_glDeleteFramebuffers;
@@ -330,9 +337,12 @@ extern PFNGLRENDERBUFFERSTORAGEPROC     glad_glRenderbufferStorage;
 #define glGetProgramInfoLog       glad_glGetProgramInfoLog
 #define glGetUniformLocation      glad_glGetUniformLocation
 #define glUniform1i               glad_glUniform1i
+#define glUniform1f               glad_glUniform1f
 #define glUniform4f               glad_glUniform4f
 #define glUniform4fv              glad_glUniform4fv
+#define glUniform3fv              glad_glUniform3fv
 #define glUniformMatrix4fv        glad_glUniformMatrix4fv
+#define glDepthMask               glad_glDepthMask
 #define glIsEnabled               glad_glIsEnabled
 #define glGenFramebuffers         glad_glGenFramebuffers
 #define glDeleteFramebuffers      glad_glDeleteFramebuffers

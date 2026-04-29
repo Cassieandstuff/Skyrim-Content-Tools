@@ -24,10 +24,14 @@ static NifDocument ParseNifFile(nifly::NifFile& nif, const std::string& debugPat
         nifly::MatTransform result = obj->transform; // local → parent
         nifly::NiNode* cur = nif.GetParentNode(obj);
         while (cur) {
-            result = cur->transform.ComposeTransforms(result);
-            cur = nif.GetParentNode(cur);
+            nifly::NiNode* grandparent = nif.GetParentNode(cur);
+            // Skip the root node's own transform — the game engine's REFR placement
+            // replaces it rather than stacking on top of it.
+            if (grandparent)
+                result = cur->transform.ComposeTransforms(result);
+            cur = grandparent;
         }
-        return result; // local → NIF root
+        return result; // local → NIF root (root node's own transform excluded)
     };
 
     // ── Pass 1: NiNode-type blocks ────────────────────────────────────────────
@@ -181,6 +185,27 @@ static NifDocument ParseNifFile(nifly::NifFile& nif, const std::string& debugPat
 
                 fprintf(stderr, "[NifDoc] '%s' shape '%s': skinned, %d bones\n",
                         debugPath.c_str(), shape->name.get().c_str(), numSkinBones);
+            }
+        }
+
+        // ── Alpha mode from NiAlphaProperty ──────────────────────────────────
+        // NiAlphaProperty::flags bitfield (Gamebryo/Bethesda):
+        //   bit 0      : alpha blending enable
+        //   bits 1-4   : src blend factor  (6 = SRC_ALPHA)
+        //   bits 5-8   : dst blend factor  (0 = ONE, 7 = ONE_MINUS_SRC_ALPHA)
+        //   bit 9      : alpha test enable
+        // Additive: blend enable + dst == 0 (ONE).
+        if (auto* ap = nif.GetAlphaProperty(shape)) {
+            const uint16_t fl  = ap->flags;
+            const bool blendOn = (fl & 0x0001) != 0;
+            const bool testOn  = (fl & 0x0200) != 0;
+            if (blendOn) {
+                const int dst = (fl >> 5) & 0xF;
+                ds.alphaMode = (dst == 0) ? NifAlphaMode::Additive
+                                           : NifAlphaMode::AlphaBlend;
+            } else if (testOn) {
+                ds.alphaMode      = NifAlphaMode::AlphaTest;
+                ds.alphaThreshold = ap->threshold / 255.f;
             }
         }
 

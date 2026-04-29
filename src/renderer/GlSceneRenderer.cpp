@@ -4,6 +4,7 @@
 #include "DdsLoader.h"
 
 #include <glad/gl.h>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cstdarg>
@@ -50,7 +51,7 @@ out vec4 f_col;
 void main() { f_col = v_col; }
 )";
 
-// Static mesh shader: simple Blinn-Phong.
+// Static mesh shader: Blinn-Phong with controllable scene light.
 static const char* kMeshVS = R"(#version 450 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_norm;
@@ -58,28 +59,51 @@ layout(location = 2) in vec2 a_uv;
 uniform mat4 u_mvp;
 uniform mat4 u_model;
 out vec3 v_norm;
+out vec3 v_worldPos;
 out vec2 v_uv;
 void main() {
+    vec4 wp     = u_model * vec4(a_pos, 1.0);
     gl_Position = u_mvp * vec4(a_pos, 1.0);
+    v_worldPos  = wp.xyz;
     v_norm = mat3(transpose(inverse(u_model))) * a_norm;
     v_uv   = a_uv;
 }
 )";
 
+// Shared fragment shader for static and skinned meshes.
+// u_alphaMode: 0=opaque, 1=alphatest (discard), 2=alphablend, 3=additive
 static const char* kMeshFS = R"(#version 450 core
 in  vec3 v_norm;
+in  vec3 v_worldPos;
 in  vec2 v_uv;
 uniform vec4      u_tint;
 uniform int       u_hasTex;
 uniform sampler2D u_diffuse;
+uniform vec3      u_lightDir;
+uniform vec3      u_lightColor;
+uniform vec3      u_ambientColor;
+uniform vec3      u_camPos;
+uniform int       u_alphaMode;       // 0=opaque 1=alphatest 2=alphablend 3=additive
+uniform float     u_alphaThreshold;  // normalised discard threshold (alphatest only)
 out vec4 f_col;
 void main() {
-    vec3 n    = normalize(v_norm);
-    vec3 L    = normalize(vec3(0.4, 1.0, 0.6));
-    float diff = max(dot(n, L), 0.15);
-    vec4 base  = (u_hasTex == 1) ? texture(u_diffuse, v_uv) : u_tint;
-    if (base.a < 0.01) base = vec4(0.72, 0.72, 0.76, 1.0);
-    f_col = vec4(base.rgb * diff, base.a);
+    vec3 n = normalize(v_norm);
+
+    vec4 base = (u_hasTex == 1) ? texture(u_diffuse, v_uv) : u_tint;
+    if (u_alphaMode == 0 && base.a < 0.01) base = vec4(0.72, 0.72, 0.76, 1.0);
+    if (u_alphaMode == 1 && base.a < u_alphaThreshold) discard;
+
+    float diff = max(dot(n, u_lightDir), 0.0);
+
+    vec3 V    = normalize(u_camPos - v_worldPos);
+    vec3 H    = normalize(u_lightDir + V);
+    float spec = pow(max(dot(n, H), 0.0), 32.0) * diff * 0.15;
+
+    vec3 lit = u_ambientColor * base.rgb
+             + u_lightColor   * base.rgb * diff
+             + u_lightColor   * spec;
+
+    f_col = vec4(lit, base.a);
 }
 )";
 
@@ -94,14 +118,16 @@ layout(std430, binding = 0) readonly buffer BoneBlock { mat4 u_bones[]; };
 uniform mat4 u_vp;
 uniform mat4 u_model;
 out vec3 v_norm;
+out vec3 v_worldPos;
 out vec2 v_uv;
 void main() {
     mat4 skin = a_boneWt.x * u_bones[a_boneIdx.x]
               + a_boneWt.y * u_bones[a_boneIdx.y]
               + a_boneWt.z * u_bones[a_boneIdx.z]
               + a_boneWt.w * u_bones[a_boneIdx.w];
-    vec4 wp   = u_model * skin * vec4(a_pos, 1.0);
+    vec4 wp     = u_model * skin * vec4(a_pos, 1.0);
     gl_Position = u_vp * wp;
+    v_worldPos  = wp.xyz;
     v_norm = mat3(transpose(inverse(u_model))) * mat3(skin) * a_norm;
     v_uv   = a_uv;
 }
@@ -271,6 +297,15 @@ void GlSceneRenderer::SetCamera(const glm::mat4& view, const glm::mat4& proj)
     m_proj = proj;
 }
 
+void GlSceneRenderer::SetLight(const glm::vec3& dir,
+                                const glm::vec3& color,
+                                const glm::vec3& ambient)
+{
+    m_lightDir     = dir;
+    m_lightColor   = color;
+    m_ambientColor = ambient;
+}
+
 void GlSceneRenderer::EndFrame()
 {
     FlushBatch();
@@ -339,16 +374,17 @@ void GlSceneRenderer::DrawGrid(float cellSize, int halfExtent)
     const float ext   = cellSize * static_cast<float>(halfExtent);
     const uint8_t gc  = 80;  // grey
 
+    // Grid in the XY plane (Z=0) — Skyrim's ground plane is Z-up.
     for (int i = -halfExtent; i <= halfExtent; ++i) {
         if (i == 0) continue;
         const float f = cellSize * static_cast<float>(i);
-        PushLine({ f,  0.f, -ext }, { f,  0.f, ext }, gc, gc, gc + 25, 255);
-        PushLine({ -ext, 0.f, f }, { ext, 0.f, f  }, gc, gc, gc + 25, 255);
+        PushLine({ f, -ext, 0.f }, { f,  ext, 0.f }, gc, gc, gc + 25, 255);
+        PushLine({ -ext, f, 0.f }, { ext, f,  0.f }, gc, gc, gc + 25, 255);
     }
-    // X axis (red)
-    PushLine({ -ext, 0.f, 0.f }, { ext, 0.f, 0.f }, 210, 55, 55, 255);
-    // Z axis (blue)
-    PushLine({ 0.f, 0.f, -ext }, { 0.f, 0.f, ext }, 55, 110, 210, 255);
+    // X axis (red = east)
+    PushLine({ -ext, 0.f, 0.f }, { ext, 0.f, 0.f }, 210, 55,  55,  255);
+    // Y axis (green = north)
+    PushLine({ 0.f, -ext, 0.f }, { 0.f, ext, 0.f }, 55,  210, 55,  255);
 }
 
 // ── Draw: skeleton ────────────────────────────────────────────────────────────
@@ -533,6 +569,20 @@ void GlSceneRenderer::DrawMesh(MeshHandle handle, const glm::mat4& world,
     glUniform4fv(glGetUniformLocation(m_meshShader, "u_tint"),
                  1, glm::value_ptr(surface.tint));
 
+    // Light uniforms
+    const glm::vec3 camPos = glm::inverse(m_view)[3];
+    glUniform3fv(glGetUniformLocation(m_meshShader, "u_lightDir"),     1, glm::value_ptr(m_lightDir));
+    glUniform3fv(glGetUniformLocation(m_meshShader, "u_lightColor"),   1, glm::value_ptr(m_lightColor));
+    glUniform3fv(glGetUniformLocation(m_meshShader, "u_ambientColor"), 1, glm::value_ptr(m_ambientColor));
+    glUniform3fv(glGetUniformLocation(m_meshShader, "u_camPos"),       1, glm::value_ptr(camPos));
+
+    int alphaMode = 0;
+    if      (surface.blendMode == DrawSurface::BlendMode::AlphaTest)  alphaMode = 1;
+    else if (surface.blendMode == DrawSurface::BlendMode::AlphaBlend) alphaMode = 2;
+    else if (surface.blendMode == DrawSurface::BlendMode::Additive)   alphaMode = 3;
+    glUniform1i(glGetUniformLocation(m_meshShader, "u_alphaMode"),      alphaMode);
+    glUniform1f(glGetUniformLocation(m_meshShader, "u_alphaThreshold"), surface.alphaThreshold);
+
     const bool hasTex = (surface.diffuse != TextureHandle::Invalid);
     glUniform1i(glGetUniformLocation(m_meshShader, "u_hasTex"), hasTex ? 1 : 0);
     if (hasTex) {
@@ -544,13 +594,22 @@ void GlSceneRenderer::DrawMesh(MeshHandle handle, const glm::mat4& world,
         }
     }
 
-    glBindVertexArray(gm.vao);
+    // Blend state — AlphaTest keeps depth write on; others turn it off.
+    if (surface.blendMode == DrawSurface::BlendMode::Additive)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    const bool depthWriteOff = (alphaMode == 2 || alphaMode == 3);
+    if (depthWriteOff) glDepthMask(GL_FALSE);
 
+    glBindVertexArray(gm.vao);
     if (surface.wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     glDrawElements(GL_TRIANGLES, gm.indexCount, GL_UNSIGNED_SHORT, nullptr);
     if (surface.wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
     glBindVertexArray(0);
+
+    // Restore blend state
+    if (surface.blendMode == DrawSurface::BlendMode::Additive)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (depthWriteOff) glDepthMask(GL_TRUE);
 }
 
 // ── Draw: skinned mesh ────────────────────────────────────────────────────────
@@ -579,6 +638,20 @@ void GlSceneRenderer::DrawSkinnedMesh(MeshHandle handle, const glm::mat4& world,
     glUniform4fv(glGetUniformLocation(m_skinnedShader, "u_tint"),
                  1, glm::value_ptr(surface.tint));
 
+    // Light uniforms
+    const glm::vec3 camPos = glm::inverse(m_view)[3];
+    glUniform3fv(glGetUniformLocation(m_skinnedShader, "u_lightDir"),     1, glm::value_ptr(m_lightDir));
+    glUniform3fv(glGetUniformLocation(m_skinnedShader, "u_lightColor"),   1, glm::value_ptr(m_lightColor));
+    glUniform3fv(glGetUniformLocation(m_skinnedShader, "u_ambientColor"), 1, glm::value_ptr(m_ambientColor));
+    glUniform3fv(glGetUniformLocation(m_skinnedShader, "u_camPos"),       1, glm::value_ptr(camPos));
+
+    int alphaMode = 0;
+    if      (surface.blendMode == DrawSurface::BlendMode::AlphaTest)  alphaMode = 1;
+    else if (surface.blendMode == DrawSurface::BlendMode::AlphaBlend) alphaMode = 2;
+    else if (surface.blendMode == DrawSurface::BlendMode::Additive)   alphaMode = 3;
+    glUniform1i(glGetUniformLocation(m_skinnedShader, "u_alphaMode"),      alphaMode);
+    glUniform1f(glGetUniformLocation(m_skinnedShader, "u_alphaThreshold"), surface.alphaThreshold);
+
     const bool hasTex = (surface.diffuse != TextureHandle::Invalid);
     glUniform1i(glGetUniformLocation(m_skinnedShader, "u_hasTex"), hasTex ? 1 : 0);
     if (hasTex) {
@@ -590,9 +663,20 @@ void GlSceneRenderer::DrawSkinnedMesh(MeshHandle handle, const glm::mat4& world,
         }
     }
 
+    // Blend state — AlphaTest keeps depth write on; others turn it off.
+    if (surface.blendMode == DrawSurface::BlendMode::Additive)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    const bool depthWriteOff = (alphaMode == 2 || alphaMode == 3);
+    if (depthWriteOff) glDepthMask(GL_FALSE);
+
     glBindVertexArray(gm.vao);
     glDrawElements(GL_TRIANGLES, gm.indexCount, GL_UNSIGNED_SHORT, nullptr);
     glBindVertexArray(0);
+
+    // Restore blend state
+    if (surface.blendMode == DrawSurface::BlendMode::Additive)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (depthWriteOff) glDepthMask(GL_TRUE);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }

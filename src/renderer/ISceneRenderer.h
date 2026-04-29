@@ -27,10 +27,14 @@ struct MeshData {
 
 // ── Per-draw surface parameters ───────────────────────────────────────────────
 struct DrawSurface {
-    TextureHandle diffuse   = TextureHandle::Invalid;
-    glm::vec4     tint      = { 1.f, 1.f, 1.f, 1.f };
-    bool          wireframe = false;
-    bool          xray      = false;
+    enum class BlendMode { Opaque, AlphaTest, AlphaBlend, Additive };
+
+    TextureHandle diffuse         = TextureHandle::Invalid;
+    glm::vec4     tint            = { 1.f, 1.f, 1.f, 1.f };
+    bool          wireframe       = false;
+    bool          xray            = false;
+    BlendMode     blendMode       = BlendMode::Opaque;
+    float         alphaThreshold  = 0.5f;   // normalised; only used for AlphaTest mode
 };
 
 // ── ISceneRenderer ────────────────────────────────────────────────────────────
@@ -65,6 +69,12 @@ struct ISceneRenderer {
     virtual void          FreeTexture          (TextureHandle handle)                  = 0;
 
     // ── Draw calls ────────────────────────────────────────────────────────────
+    // Set the scene directional light.  dir is expected to be normalised.
+    // Call once per frame before draw calls.
+    virtual void SetLight(const glm::vec3& dir,
+                          const glm::vec3& color,
+                          const glm::vec3& ambient)                          = 0;
+
     virtual void DrawGrid(float cellSize = 1.f, int halfExtent = 10)          = 0;
 
     virtual void DrawSkeleton(const Skeleton& skel, const Pose& pose,

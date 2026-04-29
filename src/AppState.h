@@ -102,6 +102,14 @@ struct AppState {
     bool   playing = false;
     bool   loop    = true;
 
+    // ── Viewport lighting ────────────────────────────────────────────────────────
+    // Spherical coords for the scene directional light (degrees).
+    // ViewportPanel converts to a normalised direction vector each frame.
+    float lightAzimuth      = 22.f;   // 0-360, CW from +Y in XY plane
+    float lightElevation    = 55.f;   // -90 to 90, degrees above horizon
+    float lightColor[3]     = { 1.0f,  0.98f, 0.92f };  // warm white
+    float ambientColor[3]   = { 0.12f, 0.13f, 0.18f };  // cool shadow fill
+
     // ── UI state ────────────────────────────────────────────────────────────────────
     AppTab activeTab    = AppTab::SceneEditor;
     int    selectedClip         = -1;  // highlighted clip in the bin
