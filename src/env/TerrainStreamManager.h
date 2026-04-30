@@ -1,12 +1,12 @@
 #pragma once
-#include "AppState.h"
+#include "app/AppState.h"
+#include "core/render/GpuAssetCache.h"
 #include "renderer/ISceneRenderer.h"
 #include <atomic>
 #include <map>
 #include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -75,8 +75,8 @@ private:
         std::vector<TerrainAlphaLayer> alphaLayers;
     };
 
-    std::map<CellCoord, TerrainTileEntry>          tiles_;
-    std::unordered_map<std::string, TextureHandle> texCache_;
+    std::map<CellCoord, TerrainTileEntry> tiles_;
+    GpuAssetCache<>                       texCache_;
     std::string wsKey_;
     CellCoord   center_ = { -0x7FFFFFFF, -0x7FFFFFFF };
 

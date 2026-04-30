@@ -1,5 +1,5 @@
 #pragma once
-#include "AppState.h"  // AppTab enum
+#include "app/AppState.h"  // AppTab enum
 #include <vector>
 
 class IPanel;

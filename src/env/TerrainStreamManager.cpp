@@ -1,8 +1,8 @@
 #include "env/TerrainStreamManager.h"
 #include "env/CellEnvironmentManager.h"
-#include "AppState.h"
-#include "DotNetHost.h"
-#include "TerrainMesh.h"
+#include "app/AppState.h"
+#include "plugin/DotNetHost.h"
+#include "asset/TerrainMesh.h"
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cfloat>
@@ -31,9 +31,7 @@ void TerrainStreamManager::Free(ISceneRenderer& renderer)
                 renderer.FreeTexture(tile.blendMaps[i]);
     }
     tiles_.clear();
-    for (auto& [path, tex] : texCache_)
-        if (tex != TextureHandle::Invalid) renderer.FreeTexture(tex);
-    texCache_.clear();
+    texCache_.Free(renderer);
 
     wsKey_  = {};
     center_ = { -0x7FFFFFFF, -0x7FFFFFFF };
@@ -46,16 +44,12 @@ TextureHandle TerrainStreamManager::ResolveLayerTex(const std::string& path,
                                                      ISceneRenderer& renderer)
 {
     if (path.empty()) return TextureHandle::Invalid;
-    std::string key = path;
-    for (char& c : key) c = (char)((c >= 'A' && c <= 'Z') ? c + 32 : c);
-    auto it = texCache_.find(key);
-    if (it != texCache_.end()) return it->second;
-    std::vector<uint8_t> bytes;
-    TextureHandle h = TextureHandle::Invalid;
-    if (state.ResolveAsset(path, bytes))
-        h = renderer.LoadTextureFromMemory(bytes);
-    texCache_[key] = h;
-    return h;
+    return texCache_.GetOrLoad(LowerPath(path), [&] {
+        std::vector<uint8_t> bytes;
+        return state.ResolveAsset(path, bytes)
+            ? renderer.LoadTextureFromMemory(bytes)
+            : TextureHandle::Invalid;
+    });
 }
 
 // ── Load ──────────────────────────────────────────────────────────────────────
@@ -87,9 +81,7 @@ TerrainStreamManager::LoadResult TerrainStreamManager::Load(
                 renderer.FreeTexture(tile.blendMaps[i]);
     }
     tiles_.clear();
-    for (auto& [path, tex] : texCache_)
-        if (tex != TextureHandle::Invalid) renderer.FreeTexture(tex);
-    texCache_.clear();
+    texCache_.Free(renderer);
 
     wsKey_  = newWsKey;
     center_ = newCenter;

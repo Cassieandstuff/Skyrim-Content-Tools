@@ -1,6 +1,6 @@
 #pragma once
-#include "AppState.h"
-#include "Pose.h"
+#include "app/AppState.h"
+#include "anim/Pose.h"
 #include "renderer/ISceneRenderer.h"
 #include <glm/glm.hpp>
 #include <map>

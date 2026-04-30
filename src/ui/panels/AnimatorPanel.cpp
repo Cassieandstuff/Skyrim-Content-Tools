@@ -1,5 +1,5 @@
 #include "AnimatorPanel.h"
-#include "AppState.h"
+#include "app/AppState.h"
 #include <imgui.h>
 
 void AnimatorPanel::Draw(AppState& /*state*/)

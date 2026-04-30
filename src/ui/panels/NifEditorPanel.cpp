@@ -1,5 +1,5 @@
 #include "NifEditorPanel.h"
-#include "AppState.h"
+#include "app/AppState.h"
 #include <imgui.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>

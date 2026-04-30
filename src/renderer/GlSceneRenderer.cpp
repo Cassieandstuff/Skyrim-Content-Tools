@@ -1,8 +1,8 @@
 #include "GlSceneRenderer.h"
 #include "ShaderSources.h"
-#include "HavokSkeleton.h"
-#include "Pose.h"
-#include "DdsLoader.h"
+#include "anim/HavokSkeleton.h"
+#include "anim/Pose.h"
+#include "asset/DdsLoader.h"
 
 #include <glad/gl.h>
 #include <glm/gtc/matrix_inverse.hpp>

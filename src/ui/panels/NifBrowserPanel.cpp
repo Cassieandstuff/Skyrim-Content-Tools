@@ -1,5 +1,5 @@
 #include "NifBrowserPanel.h"
-#include "AppState.h"
+#include "app/AppState.h"
 #include <imgui.h>
 #include <filesystem>
 #include <algorithm>

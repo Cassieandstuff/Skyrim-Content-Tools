@@ -1,7 +1,7 @@
 #include "ui/panels/ActorRenderCache.h"
-#include "AppState.h"
-#include "NifDocument.h"
-#include "Sequence.h"
+#include "app/AppState.h"
+#include "asset/NifDocument.h"
+#include "anim/Sequence.h"
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <cfloat>
@@ -172,6 +172,26 @@ void ActorRenderCache::SyncNifHandles(AppState& state, ISceneRenderer& renderer)
     }
 }
 
+// ── ApplyMorphs ───────────────────────────────────────────────────────────────
+// Blend-shape evaluation: accumulate weighted deltas onto base positions.
+// Returns the blended vertex buffer (always a full copy of base).
+static std::vector<glm::vec3> ApplyMorphs(
+    const std::vector<glm::vec3>&      base,
+    const TriDocument&                 tri,
+    const std::map<std::string, float>& weights)
+{
+    std::vector<glm::vec3> result = base;
+    for (const TriMorph& m : tri.morphs) {
+        auto it = weights.find(m.name);
+        if (it == weights.end() || it->second == 0.f) continue;
+        const float w = it->second;
+        const int   n = std::min((int)m.deltas.size(), (int)result.size());
+        for (int v = 0; v < n; v++)
+            result[v] += m.deltas[v] * w;
+    }
+    return result;
+}
+
 // ── SyncMorphs ────────────────────────────────────────────────────────────────
 
 void ActorRenderCache::SyncMorphs(AppState& state, ISceneRenderer& renderer)
@@ -201,16 +221,8 @@ void ActorRenderCache::SyncMorphs(AppState& state, ISceneRenderer& renderer)
             }
             if (!tri || tri->morphs.empty()) continue;
 
-            std::vector<glm::vec3> morphed = base.positions;
-            for (const TriMorph& m : tri->morphs) {
-                auto it = effective.find(m.name);
-                if (it == effective.end() || it->second == 0.f) continue;
-                const float w = it->second;
-                const int   n = std::min((int)m.deltas.size(), base.vertexCount);
-                for (int v = 0; v < n; v++)
-                    morphed[v] += m.deltas[v] * w;
-            }
-            renderer.UpdateMeshPositions(cache_[ai].meshHandles[mi], morphed);
+            renderer.UpdateMeshPositions(cache_[ai].meshHandles[mi],
+                ApplyMorphs(base.positions, *tri, effective));
         }
     }
 }

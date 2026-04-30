@@ -1,6 +1,7 @@
 #pragma once
-#include "AppState.h"
-#include "NifAnim.h"
+#include "app/AppState.h"
+#include "asset/NifAnim.h"
+#include "core/render/GpuAssetCache.h"
 #include "renderer/ISceneRenderer.h"
 #include <atomic>
 #include <glm/glm.hpp>
@@ -8,7 +9,6 @@
 #include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -144,7 +144,7 @@ private:
     std::string                                     loadedKey_;
     std::map<std::string, CellCatalogEntry>         meshCatalog_;
     std::vector<CellInstance>                       instances_;
-    std::unordered_map<std::string, TextureHandle>  texCache_;
+    GpuAssetCache<>                                  texCache_;
 
     // ── Streaming threads ──────────────────────────────────────────────────────
     std::thread        cellStream_;

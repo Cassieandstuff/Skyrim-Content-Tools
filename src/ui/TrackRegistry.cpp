@@ -1,7 +1,7 @@
 #include "TrackRegistry.h"
-#include "AppState.h"
-#include "AnimClip.h"
-#include "FaceClip.h"
+#include "app/AppState.h"
+#include "anim/AnimClip.h"
+#include "anim/FaceClip.h"
 #include "core/math/Interpolation.h"
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>

@@ -1,6 +1,6 @@
 #pragma once
-#include "Sequence.h"
-#include "ActorDocument.h"
+#include "anim/Sequence.h"
+#include "scene/ActorDocument.h"
 #include <functional>
 #include <vector>
 #include <imgui.h>

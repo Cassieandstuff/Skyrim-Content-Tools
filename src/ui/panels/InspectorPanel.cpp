@@ -1,7 +1,7 @@
 #include "InspectorPanel.h"
-#include "AppState.h"
-#include "DotNetHost.h"
-#include "TriDocument.h"
+#include "app/AppState.h"
+#include "plugin/DotNetHost.h"
+#include "asset/TriDocument.h"
 #include <imgui.h>
 #include <cstdio>
 #include <cstring>

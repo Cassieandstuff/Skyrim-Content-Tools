@@ -1,7 +1,7 @@
 #include "ClipBinPanel.h"
-#include "AppState.h"
-#include "FaceClip.h"
-#include "Sequence.h"
+#include "app/AppState.h"
+#include "anim/FaceClip.h"
+#include "anim/Sequence.h"
 #include <imgui.h>
 #include <algorithm>
 #include <cstdio>

@@ -1,8 +1,8 @@
 #include "env/CellEnvironmentManager.h"
-#include "AppState.h"
-#include "BsaReader.h"
-#include "DotNetHost.h"
-#include "NifDocument.h"
+#include "app/AppState.h"
+#include "asset/BsaReader.h"
+#include "plugin/DotNetHost.h"
+#include "asset/NifDocument.h"
 #include <nlohmann/json.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -51,10 +51,7 @@ void CellEnvironmentManager::Free(ISceneRenderer& renderer)
         for (auto& shape : entry.shapes)
             if (shape.mesh != MeshHandle::Invalid) renderer.FreeMesh(shape.mesh);
 
-    for (auto& [path, tex] : texCache_)
-        if (tex != TextureHandle::Invalid) renderer.FreeTexture(tex);
-
-    texCache_.clear();
+    texCache_.Free(renderer);
     meshCatalog_.clear();
     instances_.clear();
     loadedKey_.clear();
@@ -140,18 +137,13 @@ void CellEnvironmentManager::Sync(ISceneRenderer& renderer)
         se.morphAnim      = std::move(ps.morphAnim);
         se.mesh           = renderer.UploadMesh(ps.meshData);
 
-        if (!ps.diffusePath.empty()) {
-            auto it = texCache_.find(ps.diffusePath);
-            if (it != texCache_.end()) {
-                se.texture = it->second;
-            } else {
-                TextureHandle th = TextureHandle::Invalid;
-                if (!ps.ddsBytes.empty())
-                    th = renderer.LoadTextureFromMemory(ps.ddsBytes);
-                texCache_[ps.diffusePath] = th;
-                se.texture = th;
-            }
-        }
+        if (!ps.diffusePath.empty())
+            // ps.diffusePath is already lowercased by StreamWorker.
+            se.texture = texCache_.GetOrLoad(ps.diffusePath, [&] {
+                return ps.ddsBytes.empty()
+                    ? TextureHandle::Invalid
+                    : renderer.LoadTextureFromMemory(ps.ddsBytes);
+            });
 
         CellCatalogEntry& entry = meshCatalog_[ps.baseFormKey];
         // animClip is only set on the first PendingShape per base.

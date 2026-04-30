@@ -1,5 +1,5 @@
 #include "NifEditorState.h"
-#include "AppState.h"
+#include "app/AppState.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <cfloat>
 

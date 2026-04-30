@@ -1,6 +1,6 @@
 #include "ViewportPanel.h"
-#include "AppState.h"
-#include "Sequence.h"
+#include "app/AppState.h"
+#include "anim/Sequence.h"
 #include <imgui.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>

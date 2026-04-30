@@ -1,7 +1,7 @@
 #include "MainLayout.h"
-#include "DotNetHost.h"
-#include "MutagenBackend.h"
-#include "ProjectFile.h"
+#include "plugin/DotNetHost.h"
+#include "plugin/MutagenBackend.h"
+#include "app/ProjectFile.h"
 #include <imgui.h>
 #include <imgui_internal.h>  // DockBuilder API
 #include <algorithm>

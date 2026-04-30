@@ -1,6 +1,6 @@
 #pragma once
 #include "ui/IPanel.h"
-#include "IPluginBackend.h"
+#include "plugin/IPluginBackend.h"
 #include <string>
 #include <vector>
 

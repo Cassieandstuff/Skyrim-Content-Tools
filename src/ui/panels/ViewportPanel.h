@@ -1,8 +1,8 @@
 #pragma once
 #include "ui/IPanel.h"
-#include "AppState.h"
-#include "Camera.h"
-#include "ControllerInput.h"
+#include "app/AppState.h"
+#include "ui/Camera.h"
+#include "ui/ControllerInput.h"
 #include "env/CellEnvironmentManager.h"
 #include "env/TerrainStreamManager.h"
 #include "ui/panels/ActorRenderCache.h"

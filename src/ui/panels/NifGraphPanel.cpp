@@ -1,5 +1,5 @@
 #include "NifGraphPanel.h"
-#include "AppState.h"
+#include "app/AppState.h"
 #include <imgui.h>
 #include <imgui_node_editor.h>
 #include <cstdio>

@@ -1,6 +1,6 @@
 #include "PluginBrowserPanel.h"
-#include "AppState.h"
-#include "DotNetHost.h"
+#include "app/AppState.h"
+#include "plugin/DotNetHost.h"
 #include <imgui.h>
 #include <nlohmann/json.hpp>
 #include <cstdio>

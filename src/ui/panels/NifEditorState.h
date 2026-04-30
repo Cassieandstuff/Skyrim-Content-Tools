@@ -1,6 +1,6 @@
 #pragma once
-#include "NifDocument.h"
-#include "Camera.h"
+#include "asset/NifDocument.h"
+#include "ui/Camera.h"
 #include "renderer/ISceneRenderer.h"
 #include <vector>
 #include <string>

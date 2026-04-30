@@ -1,5 +1,5 @@
 #include "SceneGraphPanel.h"
-#include "AppState.h"
+#include "app/AppState.h"
 #include <imgui.h>
 
 void SceneGraphPanel::Draw(AppState& /*state*/)
