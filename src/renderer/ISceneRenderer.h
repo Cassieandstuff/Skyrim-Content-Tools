@@ -38,8 +38,23 @@ struct DrawSurface {
     bool          wireframe       = false;
     bool          xray            = false;
     bool          useVertexColor  = false;   // use per-vertex RGB from location 5 as base color
+    bool          terrainTex      = false;   // terrain mode: tiled diffuse × (vtxcol×2)
+    float         texTileRate     = 6.f;     // UV tile scale for terrain mode
     BlendMode     blendMode       = BlendMode::Opaque;
     float         alphaThreshold  = 0.5f;   // normalised; only used for AlphaTest mode
+};
+
+// ── Terrain draw surface ──────────────────────────────────────────────────────
+// Passed to DrawTerrainTile.  layer[0] = base BTXT texture; layers[1-5] = ATXT
+// alpha overlays.  blendMaps[i] is the per-vertex opacity map for layers[i+1].
+// All handles must be valid if layerCount > 0; unused slots are ignored.
+struct TerrainSurface {
+    static constexpr int kMaxLayers = 6;
+    int           layerCount  = 1;
+    TextureHandle layers[kMaxLayers]          = {};
+    float         layerRates[kMaxLayers]      = {6,6,6,6,6,6};
+    TextureHandle blendMaps[kMaxLayers - 1]   = {};  // one per alpha layer
+    bool          useVertexColor = false;             // apply VCLR × 2 modulation
 };
 
 // ── ISceneRenderer ────────────────────────────────────────────────────────────
@@ -64,6 +79,9 @@ struct ISceneRenderer {
     // ── GPU resource management ───────────────────────────────────────────────
     virtual MeshHandle    UploadMesh  (const MeshData& data)                  = 0;
     virtual void          FreeMesh   (MeshHandle handle)                      = 0;
+    // Upload a 33×33 single-channel float blend map as a GL_R32F texture.
+    // Used for terrain VTXT alpha layers; returns TextureHandle::Invalid on failure.
+    virtual TextureHandle UploadBlendMap(const float* data33x33)              = 0;
     // Overwrite the position buffer of an already-uploaded mesh in-place.
     // `positions` must be the same length as the original upload.  Used for
     // CPU-side morph blending (face ARKit blend shapes).
@@ -91,4 +109,8 @@ struct ISceneRenderer {
     virtual void DrawSkinnedMesh(MeshHandle mesh, const glm::mat4& world,
                                  std::span<const glm::mat4> boneTransforms,
                                  const DrawSurface& surface = {})             = 0;
+
+    // Draw a terrain tile using the dedicated multi-layer terrain shader.
+    // Terrain meshes are already in world space — no model matrix needed.
+    virtual void DrawTerrainTile(MeshHandle mesh, const TerrainSurface& surface) = 0;
 };

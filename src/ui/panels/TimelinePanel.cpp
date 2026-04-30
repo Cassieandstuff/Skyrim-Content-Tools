@@ -3,27 +3,21 @@
 #include "FaceClip.h"
 #include "Sequence.h"
 #include "ui/TrackRegistry.h"
+#include "ui/StylePalette.h"
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 
+using namespace SCT;
+
 // ── Layout constants ──────────────────────────────────────────────────────────
 static constexpr float kRulerH       = 20.f;
 static constexpr float kActorHeaderH = 22.f;
 static constexpr float kLaneH        = 26.f;
-static constexpr float kEdgeHitW     = 6.f;   // pixels from edge to start resize hit
-static constexpr float kMinItemW     = 4.f;   // minimum rendered width of a clip item
-static constexpr ImU32 kColBg        = IM_COL32(13,  14,  17,  255);
-static constexpr ImU32 kColRuler     = IM_COL32(20,  22,  28,  255);
-static constexpr ImU32 kColSep       = IM_COL32(40,  44,  55,  255);
-static constexpr ImU32 kColHeader    = IM_COL32(22,  26,  36,  255);
-static constexpr ImU32 kColLane      = IM_COL32(16,  18,  24,  255);
-static constexpr ImU32 kColLaneAlt   = IM_COL32(18,  20,  27,  255);
-static constexpr ImU32 kColScrubber  = IM_COL32(240, 200,  60,  220);
-static constexpr ImU32 kColText      = IM_COL32(160, 170, 185, 200);
-static constexpr ImU32 kColTextDim   = IM_COL32(100, 110, 125, 160);
+static constexpr float kEdgeHitW     = 6.f;
+static constexpr float kMinItemW     = 4.f;
 
 // ── IPanel::Draw ──────────────────────────────────────────────────────────────
 
@@ -395,12 +389,43 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
     // Scaffolded indicator for unimplemented lane types (excludes lanes that
     // accept real items even if their evaluate callback isn't wired yet).
     const bool acceptsItems = (lane->type == TrackType::AnimClip ||
-                               lane->type == TrackType::FaceData);
+                               lane->type == TrackType::FaceData ||
+                               lane->type == TrackType::Camera);
     if (def && !def->evaluate && !acceptsItems) {
         char badge[32]; std::snprintf(badge, sizeof(badge), "[%s]", laneLabel);
         const float bx = trackX + 4;
         dl->AddText({bx, laneY + (laneH - ImGui::GetTextLineHeight()) * 0.5f},
                     IM_COL32(100, 110, 130, 100), badge);
+    }
+
+    // [⊕ Shot] button in the Camera lane header — captures viewport camera as a
+    // new shot and places it at state.time on the Camera lane.
+    if (lane->type == TrackType::Camera) {
+        const float btnH = ImGui::GetFrameHeight();
+        const float btnX = trackX - 62.f;
+        const float btnY = laneY + (laneH - btnH) * 0.5f;
+        ImGui::SetCursorScreenPos({btnX, btnY});
+        if (ImGui::SmallButton("\xe2\x8a\x95 Shot##cam_cap")) {  // ⊕
+            CameraShot shot;
+            shot.name  = "Shot " + std::to_string(state.cameraShots.size() + 1);
+            shot.eye   = state.viewportEye;
+            shot.yaw   = state.viewportAzimuth;
+            shot.pitch = state.viewportElevation;
+            state.cameraShots.push_back(shot);
+            const int shotIdx = (int)state.cameraShots.size() - 1;
+
+            SequenceItem item;
+            item.assetIndex = shotIdx;
+            item.seqStart   = state.time;
+            item.trimIn     = 0.f;
+            item.trimOut    = 5.f;
+            lane->items.push_back(item);
+
+            state.selectedShotIndex    = shotIdx;
+            state.selectedCast         = -1;
+            state.selectedCellRefIndex = -1;
+            state.projectDirty         = true;
+        }
     }
 
     if (trackW <= 0.f) return;
@@ -447,6 +472,9 @@ void TimelinePanel::DrawLane(AppState& state, int actorIdx, int laneIdx,
         else if (lane->type == TrackType::FaceData &&
                  item.assetIndex >= 0 && item.assetIndex < (int)state.faceClips.size())
             cname = state.faceClips[item.assetIndex].name.c_str();
+        else if (lane->type == TrackType::Camera &&
+                 item.assetIndex >= 0 && item.assetIndex < (int)state.cameraShots.size())
+            cname = state.cameraShots[item.assetIndex].name.c_str();
         if (cname) {
             ImVec2 ts = ImGui::CalcTextSize(cname);
             if (ts.x + 8.f <= cx1 - cx0)
@@ -619,6 +647,13 @@ void TimelinePanel::HandleInput(AppState& state,
                             dragTarget_   = DragTarget::ItemBody;
                             dragOffsetSec_ = XToSeq(mouse.x, trackX) - item.seqStart;
                         }
+
+                        // Select shot when clicking a Camera lane item.
+                        if (lane->type == TrackType::Camera) {
+                            state.selectedShotIndex    = item.assetIndex;
+                            state.selectedCast         = -1;
+                            state.selectedCellRefIndex = -1;
+                        }
                         break;
                     }
                 }
@@ -655,15 +690,20 @@ void TimelinePanel::HandleInput(AppState& state,
                     }
                 } else if (dragTarget_ == DragTarget::ItemRight) {
                     const float sourceT = tMouse - item.seqStart + item.trimIn;
-                    float maxOut = 0.f;
-                    if (lane->type == TrackType::AnimClip &&
-                        item.assetIndex >= 0 && item.assetIndex < (int)state.clips.size())
-                        maxOut = state.clips[item.assetIndex].duration;
-                    else if (lane->type == TrackType::FaceData &&
-                             item.assetIndex >= 0 && item.assetIndex < (int)state.faceClips.size())
-                        maxOut = state.faceClips[item.assetIndex].duration;
-                    if (maxOut > 0.f)
-                        item.trimOut = std::clamp(sourceT, item.trimIn + 0.05f, maxOut);
+                    if (lane->type == TrackType::Camera) {
+                        // Camera shots have no source-asset duration limit — resize freely.
+                        item.trimOut = std::max(sourceT, item.trimIn + 0.05f);
+                    } else {
+                        float maxOut = 0.f;
+                        if (lane->type == TrackType::AnimClip &&
+                            item.assetIndex >= 0 && item.assetIndex < (int)state.clips.size())
+                            maxOut = state.clips[item.assetIndex].duration;
+                        else if (lane->type == TrackType::FaceData &&
+                                 item.assetIndex >= 0 && item.assetIndex < (int)state.faceClips.size())
+                            maxOut = state.faceClips[item.assetIndex].duration;
+                        if (maxOut > 0.f)
+                            item.trimOut = std::clamp(sourceT, item.trimIn + 0.05f, maxOut);
+                    }
                 }
             }
         }
@@ -723,8 +763,24 @@ void TimelinePanel::HandleInput(AppState& state,
             else if (lane->type == TrackType::FaceData &&
                      item.assetIndex >= 0 && item.assetIndex < (int)state.faceClips.size())
                 itemName = state.faceClips[item.assetIndex].name.c_str();
+            else if (lane->type == TrackType::Camera &&
+                     item.assetIndex >= 0 && item.assetIndex < (int)state.cameraShots.size())
+                itemName = state.cameraShots[item.assetIndex].name.c_str();
             if (itemName) ImGui::TextDisabled("%s", itemName);
             ImGui::Separator();
+
+            // Camera-specific context actions.
+            if (lane->type == TrackType::Camera &&
+                item.assetIndex >= 0 && item.assetIndex < (int)state.cameraShots.size()) {
+                if (ImGui::MenuItem("Set from Current Camera")) {
+                    CameraShot& shot = state.cameraShots[item.assetIndex];
+                    shot.eye   = state.viewportEye;
+                    shot.yaw   = state.viewportAzimuth;
+                    shot.pitch = state.viewportElevation;
+                    state.projectDirty = true;
+                }
+            }
+
             if (ImGui::MenuItem("Remove")) {
                 lane->items.erase(lane->items.begin() + dragItemIdx_);
                 dragItemIdx_ = -1;

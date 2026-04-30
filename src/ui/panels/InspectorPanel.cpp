@@ -22,8 +22,11 @@ void InspectorPanel::Draw(AppState& state)
 {
     ImGui::Begin(PanelID());
 
-    if (state.selectedCellRefIndex >= 0 &&
-        state.selectedCellRefIndex < (int)state.loadedCell.refs.size())
+    if (state.selectedShotIndex >= 0 &&
+        state.selectedShotIndex < (int)state.cameraShots.size())
+        DrawCameraShot(state, state.selectedShotIndex);
+    else if (state.selectedCellRefIndex >= 0 &&
+             state.selectedCellRefIndex < (int)state.loadedCell.refs.size())
         DrawCellRefProperties(state, state.selectedCellRefIndex);
     else if (state.selectedCast >= 0 && state.selectedCast < (int)state.cast.size())
         DrawActorProperties(state, state.selectedCast);
@@ -108,6 +111,61 @@ void InspectorPanel::DrawSceneProperties(AppState& state)
     ImGui::TextDisabled("Duration:  %.2f s", seqDur);
     if (!state.dataFolder.empty())
         ImGui::TextDisabled("Skeletons: %d found", (int)state.discoveredSkeletons.size());
+}
+
+// ── Camera Shot ───────────────────────────────────────────────────────────────
+
+void InspectorPanel::DrawCameraShot(AppState& state, int shotIdx)
+{
+    CameraShot& shot = state.cameraShots[shotIdx];
+
+    if (shotIdx != lastShotSelected_) {
+        std::snprintf(shotNameBuf_, sizeof(shotNameBuf_), "%s", shot.name.c_str());
+        lastShotSelected_ = shotIdx;
+    }
+
+    char header[64];
+    std::snprintf(header, sizeof(header), "Camera Shot %d", shotIdx + 1);
+    ImGui::SeparatorText(header);
+
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::InputTextWithHint("##shot_name", "Shot name\xe2\x80\xa6",
+                                 shotNameBuf_, sizeof(shotNameBuf_))) {
+        shot.name      = shotNameBuf_;
+        state.projectDirty = true;
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Transform");
+
+    float eyeArr[3] = { shot.eye.x, shot.eye.y, shot.eye.z };
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::DragFloat3("Eye##shot", eyeArr, 1.f, -1e7f, 1e7f, "%.1f")) {
+        shot.eye       = { eyeArr[0], eyeArr[1], eyeArr[2] };
+        state.projectDirty = true;
+    }
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::DragFloat("Yaw##shot",   &shot.yaw,   0.5f, -360.f, 360.f, "%.1f\xc2\xb0"))
+        state.projectDirty = true;
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::DragFloat("Pitch##shot", &shot.pitch,  0.5f, -89.f,  89.f, "%.1f\xc2\xb0"))
+        state.projectDirty = true;
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Lens");
+
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::SliderFloat("FOV##shot", &shot.fov, 10.f, 120.f, "%.0f\xc2\xb0"))
+        state.projectDirty = true;
+
+    ImGui::Spacing();
+    if (ImGui::Button("Capture from Viewport##shot", { -1.f, 0.f })) {
+        shot.eye   = state.viewportEye;
+        shot.yaw   = state.viewportAzimuth;
+        shot.pitch = state.viewportElevation;
+        std::snprintf(shotNameBuf_, sizeof(shotNameBuf_), "%s", shot.name.c_str());
+        state.projectDirty = true;
+    }
 }
 
 // ── Actor Properties ──────────────────────────────────────────────────────────

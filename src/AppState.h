@@ -1,6 +1,7 @@
 #pragma once
 #include "ActorDocument.h"
 #include "AnimClip.h"
+#include "CameraShot.h"
 #include "FaceClip.h"
 #include "HavokSkeleton.h"
 #include "IPluginBackend.h"
@@ -40,16 +41,6 @@ struct CellContext {
     int         cellY             = 0;
 
     bool Empty() const { return !loaded || refs.empty(); }
-};
-
-// ── LandRecord ────────────────────────────────────────────────────────────────
-// Decoded VHGT/VCLR terrain data for one exterior cell.  Heights are world-space
-// Z values in Skyrim units. Vertex colors are optional (hasColors == false if
-// the LAND record has no VCLR sub-record).
-struct LandRecord {
-    float   heights[33][33]   = {};   // world-space Z, row-major
-    bool    hasColors         = false;
-    uint8_t colors[33][33][3] = {};   // RGB, 0-255
 };
 
 // ── Toast notifications ───────────────────────────────────────────────────────
@@ -101,9 +92,10 @@ struct Actor {
 struct AppState {
 
     // ── Asset pools (the "bins") ────────────────────────────────────────────────
-    std::vector<AnimClip>  clips;      // body animation clip library (immutable once loaded)
-    std::vector<FaceClip>  faceClips;  // face animation clip library (extracted from HKX annotations)
-    std::vector<Skeleton>  skeletons;  // loaded skeleton definitions (deduplicated)
+    std::vector<AnimClip>    clips;       // body animation clip library (immutable once loaded)
+    std::vector<FaceClip>    faceClips;   // face animation clip library (extracted from HKX annotations)
+    std::vector<Skeleton>    skeletons;   // loaded skeleton definitions (deduplicated)
+    std::vector<CameraShot>  cameraShots; // named camera shots referenced by Camera scene track
 
     // ── Cast ─────────────────────────────────────────────────────────────────────
     std::vector<ActorDocument> cast;  // actor authoring documents
@@ -132,6 +124,14 @@ struct AppState {
     int    selectedClip         = -1;  // highlighted clip in the bin
     int    selectedCast         = -1;  // selected cast entry (-1 = none)
     int    selectedCellRefIndex = -1;  // selected cell placed-ref (-1 = none)
+    int    selectedShotIndex    = -1;  // selected camera shot (-1 = none)
+
+    // ── Viewport camera mirror ─────────────────────────────────────────────────
+    // Written by ViewportPanel each frame.  Read by the [⊕ Capture] workflow to
+    // snap the current viewport view into a CameraShot.
+    glm::vec3 viewportEye        = {};
+    float     viewportAzimuth    = 45.f;
+    float     viewportElevation  = 25.f;
 
     // ── Data folder ──────────────────────────────────────────────────────────────────
     std::string                   dataFolder;           // path to the game's Data directory

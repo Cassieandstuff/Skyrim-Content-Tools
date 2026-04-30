@@ -47,6 +47,23 @@ void Sequence::EnsureSceneTrack(TrackType type)
     sceneTracks.push_back(std::move(lane));
 }
 
+int Sequence::EvaluateCameraTrack(float t) const
+{
+    for (const auto& lane : sceneTracks) {
+        if (lane.type != TrackType::Camera) continue;
+        int   result    = -1;
+        float bestStart = -1.f;
+        for (const auto& item : lane.items) {
+            if (item.seqStart <= t && item.SeqEnd() > t && item.seqStart > bestStart) {
+                bestStart = item.seqStart;
+                result    = item.assetIndex;
+            }
+        }
+        return result;
+    }
+    return -1;
+}
+
 void Sequence::Evaluate(float t, AppState& state, std::vector<ActorEval>& out) const
 {
     out.resize(state.actors.size());

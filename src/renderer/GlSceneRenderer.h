@@ -31,9 +31,10 @@ public:
     void          FreeMesh            (MeshHandle handle) override;
     void          UpdateMeshPositions (MeshHandle handle,
                                        std::span<const glm::vec3> positions) override;
-    TextureHandle LoadTexture         (const std::string& path) override;
+    TextureHandle LoadTexture          (const std::string& path) override;
     TextureHandle LoadTextureFromMemory(const std::vector<uint8_t>& bytes) override;
-    void          FreeTexture         (TextureHandle handle) override;
+    TextureHandle UploadBlendMap       (const float* data33x33) override;
+    void          FreeTexture          (TextureHandle handle) override;
 
     void SetLight(const glm::vec3& dir,
                   const glm::vec3& color,
@@ -47,6 +48,7 @@ public:
     void DrawSkinnedMesh(MeshHandle mesh, const glm::mat4& world,
                          std::span<const glm::mat4> boneTransforms,
                          const DrawSurface& surface) override;
+    void DrawTerrainTile(MeshHandle mesh, const TerrainSurface& surface) override;
 
 private:
     // ── Batch rendering (lines + points) ──────────────────────────────────────
@@ -77,6 +79,7 @@ private:
     unsigned int m_primShader    = 0;   // lines / points with per-vertex colour
     unsigned int m_meshShader    = 0;   // static mesh, Blinn-Phong
     unsigned int m_skinnedShader = 0;   // skinned mesh via SSBO
+    unsigned int m_terrainShader = 0;   // terrain: 6-layer VTXT blend
     unsigned int CompileProgram(const char* vs, const char* fs, const char* label);
 
     // ── GPU mesh store ────────────────────────────────────────────────────────

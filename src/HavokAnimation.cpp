@@ -1,4 +1,5 @@
 #include "HavokAnimation.h"
+#include "core/io/BoundsSafeReader.h"
 #include <pugixml.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <sstream>
@@ -41,41 +42,8 @@ const char* ParseTuple4(const char* p, float& x, float& y, float& z, float& w)
     return p;
 }
 
-// ── Bounds-safe reader ────────────────────────────────────────────────────────
-// All reads that would exceed `end` set ok=false and return a zero value.
-// Callers check ok after reading sections to bail out gracefully.
-
-struct Reader {
-    const uint8_t* p;
-    const uint8_t* end;
-    bool ok;
-
-    Reader(const uint8_t* start, const uint8_t* e)
-        : p(start), end(e), ok(start <= e) {}
-
-    float F32() {
-        if (p + 4 > end) { ok = false; return 0.f; }
-        float v; std::memcpy(&v, p, 4); p += 4; return v;
-    }
-    uint16_t U16() {
-        if (p + 2 > end) { ok = false; return 0; }
-        uint16_t v; std::memcpy(&v, p, 2); p += 2; return v;
-    }
-    uint8_t U8() {
-        if (p >= end) { ok = false; return 0; }
-        return *p++;
-    }
-    void skip(int n) {
-        if (n < 0 || p + n > end) { ok = false; p = end; return; }
-        p += n;
-    }
-    void align4(const uint8_t* base) {
-        uintptr_t off = static_cast<uintptr_t>(p - base);
-        const uint8_t* aligned = base + ((off + 3u) & ~3u);
-        if (aligned > end) { ok = false; p = end; return; }
-        p = aligned;
-    }
-};
+// BoundsSafeReader is defined in core/io/BoundsSafeReader.h; alias locally.
+using Reader = BoundsSafeReader;
 
 // ── ThreeComp40 quaternion ────────────────────────────────────────────────────
 //

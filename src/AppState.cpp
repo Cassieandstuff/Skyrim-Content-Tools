@@ -20,6 +20,39 @@
 #include <windows.h>
 #endif
 
+// ── File-local helpers ────────────────────────────────────────────────────────
+
+// RAII wrapper for the char* buffer returned by DotNetHost::HkxToXml.
+// Calls FreeBuffer on destruction so callers never need to remember it.
+struct HkxXmlBuf {
+    char* data = nullptr;
+    int   len  = 0;
+    ~HkxXmlBuf() { if (data) DotNetHost::FreeBuffer(data); }
+    explicit operator bool() const { return data != nullptr && len > 0; }
+};
+
+// Parse placed-ref JSON into ctx.refs using the exterior-cell field set as the
+// authoritative schema.  Interior cells omit the exterior-only fields; the
+// matching CellContext fields keep their zero-initialised defaults.
+static void ParsePlacedRefs(const nlohmann::json& arr, CellContext& ctx)
+{
+    for (const auto& j : arr) {
+        CellPlacedRef ref;
+        ref.refFormKey  = j.value("refFormKey",  std::string{});
+        ref.baseFormKey = j.value("baseFormKey", std::string{});
+        ref.nifPath     = j.value("nifPath",     std::string{});
+        ref.posX        = j.value("posX",  0.f);
+        ref.posY        = j.value("posY",  0.f);
+        ref.posZ        = j.value("posZ",  0.f);
+        ref.rotX        = j.value("rotX",  0.f);
+        ref.rotY        = j.value("rotY",  0.f);
+        ref.rotZ        = j.value("rotZ",  0.f);
+        ref.scale       = j.value("scale", 1.f);
+        if (ref.nifPath.empty()) continue;
+        ctx.refs.push_back(std::move(ref));
+    }
+}
+
 // ── ExtractCreatureType ────────────────────────────────────────────────────────
 
 std::string ExtractCreatureType(const char* path)
@@ -75,17 +108,19 @@ void AppState::NewProject()
 {
     clips.clear();
     faceClips.clear();
+    cameraShots.clear();
     cast.clear();
     actors.clear();
     skeletons.clear();
-    sequence     = Sequence{};
-    loadedCell   = CellContext{};
-    landRecord   = LandRecord{};
-    time         = 0.f;
-    playing      = false;
-    selectedClip = -1;
-    selectedCast = -1;
-    importErr[0] = '\0';
+    sequence          = Sequence{};
+    loadedCell        = CellContext{};
+    landRecord        = LandRecord{};
+    time              = 0.f;
+    playing           = false;
+    selectedClip      = -1;
+    selectedCast      = -1;
+    selectedShotIndex = -1;
+    importErr[0]      = '\0';
     toasts.clear();
     projectPath  = "";
     projectName  = "Untitled";
@@ -110,16 +145,16 @@ int AppState::LoadClipFromPath(const char* path, char* errOut, int errLen)
                 "HKX import unavailable — .NET 10 runtime or SctBridge.dll not found");
             return -1;
         }
-        char* xmlBuf = nullptr; int xmlLen = 0;
-        if (DotNetHost::HkxToXml(path, &xmlBuf, &xmlLen, errOut, errLen)) {
-            ok = LoadHavokAnimationXmlFromBuffer(xmlBuf, xmlLen, stem.c_str(),
+        HkxXmlBuf xml;
+        if (DotNetHost::HkxToXml(path, &xml.data, &xml.len, errOut, errLen)) {
+            ok = LoadHavokAnimationXmlFromBuffer(xml.data, xml.len, stem.c_str(),
                                                  clip, errOut, errLen);
             if (ok) {
                 // Also extract face annotations from the same XML buffer — free
                 // bonus since we already paid for the HkxToXml round-trip.
                 FaceClip fc;
                 char faceErr[256] = {};
-                if (fc.ParseFromXml(xmlBuf, xmlLen, stem.c_str(), faceErr, sizeof(faceErr))) {
+                if (fc.ParseFromXml(xml.data, xml.len, stem.c_str(), faceErr, sizeof(faceErr))) {
                     if (!fc.channels.empty()) {
                         fc.sourcePath = path;
                         faceClips.push_back(std::move(fc));
@@ -129,13 +164,10 @@ int AppState::LoadClipFromPath(const char* path, char* errOut, int errLen)
                             (int)faceClips.back().channels.size());
                         PushToast(msg, ToastLevel::Info);
                     }
-                    // If channels is empty it just means no MorphFace annotations
-                    // in this HKX — silently fine.
                 } else if (faceErr[0]) {
                     PushToast(std::string("Face parse: ") + faceErr, ToastLevel::Warning);
                 }
             }
-            DotNetHost::FreeBuffer(xmlBuf);
         }
     } else {
         ok = LoadHavokAnimationXml(path, clip, errOut, errLen);
@@ -167,11 +199,9 @@ int AppState::LoadFaceClipFromPath(const char* path, char* errOut, int errLen)
                 "HKX import unavailable — .NET 10 runtime or SctBridge.dll not found");
             return -1;
         }
-        char* xmlBuf = nullptr; int xmlLen = 0;
-        if (DotNetHost::HkxToXml(path, &xmlBuf, &xmlLen, errOut, errLen)) {
-            ok = clip.ParseFromXml(xmlBuf, xmlLen, stem.c_str(), errOut, errLen);
-            DotNetHost::FreeBuffer(xmlBuf);
-        }
+        HkxXmlBuf xml;
+        if (DotNetHost::HkxToXml(path, &xml.data, &xml.len, errOut, errLen))
+            ok = clip.ParseFromXml(xml.data, xml.len, stem.c_str(), errOut, errLen);
     } else {
         // Direct XML path.
         std::ifstream f(path, std::ios::binary);
@@ -215,21 +245,7 @@ bool AppState::LoadCell(const char* formKey, const char* cellName,
         ctx.name    = (cellName && *cellName) ? cellName : formKey;
         ctx.loaded  = true;
 
-        for (const auto& j : arr) {
-            CellPlacedRef ref;
-            ref.refFormKey  = j.value("refFormKey",  std::string{});
-            ref.baseFormKey = j.value("baseFormKey", std::string{});
-            ref.nifPath     = j.value("nifPath",     std::string{});
-            ref.posX        = j.value("posX",  0.f);
-            ref.posY        = j.value("posY",  0.f);
-            ref.posZ        = j.value("posZ",  0.f);
-            ref.rotX        = j.value("rotX",  0.f);
-            ref.rotY        = j.value("rotY",  0.f);
-            ref.rotZ        = j.value("rotZ",  0.f);
-            ref.scale       = j.value("scale", 1.f);
-            if (ref.nifPath.empty()) continue;
-            ctx.refs.push_back(std::move(ref));
-        }
+        ParsePlacedRefs(arr, ctx);
 
         loadedCell = std::move(ctx);
         return true;
@@ -278,21 +294,7 @@ bool AppState::LoadExteriorCell(const char* worldspaceFormKey, int cellX, int ce
         ctx.cellX            = cellX;
         ctx.cellY            = cellY;
 
-        for (const auto& j : arr) {
-            CellPlacedRef ref;
-            ref.refFormKey  = j.value("refFormKey",  std::string{});
-            ref.baseFormKey = j.value("baseFormKey", std::string{});
-            ref.nifPath     = j.value("nifPath",     std::string{});
-            ref.posX        = j.value("posX",  0.f);
-            ref.posY        = j.value("posY",  0.f);
-            ref.posZ        = j.value("posZ",  0.f);
-            ref.rotX        = j.value("rotX",  0.f);
-            ref.rotY        = j.value("rotY",  0.f);
-            ref.rotZ        = j.value("rotZ",  0.f);
-            ref.scale       = j.value("scale", 1.f);
-            if (ref.nifPath.empty()) continue;
-            ctx.refs.push_back(std::move(ref));
-        }
+        ParsePlacedRefs(arr, ctx);
 
         // Parse land data
         LandRecord land{};
@@ -366,11 +368,9 @@ int AppState::LoadSkeletonAndAddActor(const char* path, char* errOut, int errLen
                 "HKX import unavailable — .NET 10 runtime or SctBridge.dll not found");
             return -1;
         }
-        char* xmlBuf = nullptr; int xmlLen = 0;
-        if (DotNetHost::HkxToXml(path, &xmlBuf, &xmlLen, errOut, errLen)) {
-            ok = LoadHavokSkeletonXmlFromBuffer(xmlBuf, xmlLen, sk, errOut, errLen);
-            DotNetHost::FreeBuffer(xmlBuf);
-        }
+        HkxXmlBuf xml;
+        if (DotNetHost::HkxToXml(path, &xml.data, &xml.len, errOut, errLen))
+            ok = LoadHavokSkeletonXmlFromBuffer(xml.data, xml.len, sk, errOut, errLen);
     } else {
         ok = LoadHavokSkeletonXml(path, sk, errOut, errLen);
     }
@@ -396,8 +396,9 @@ int AppState::LoadSkeletonAndAddActor(const char* path, char* errOut, int errLen
     actors.push_back(actor);
 
     // Ensure the sequence has a track group for this actor (populated with
-    // one lane per registered per-actor track type).
+    // one lane per registered per-actor track type) and scene-level lanes.
     sequence.EnsureActorGroup(actorIdx);
+    sequence.EnsureSceneTrack(TrackType::Camera);
 
     return actorIdx;
 }
@@ -718,6 +719,7 @@ int AppState::AddActorFromRecord(const NpcRecord& rec)
     actors.push_back(actor);
 
     sequence.EnsureActorGroup(actorIdx);
+    sequence.EnsureSceneTrack(TrackType::Camera);
 
     // Auto-assign skeleton from the NPC's race skeleton model path.
     // skeletonModelPath is a NIF path relative to Data\Meshes\, e.g.
@@ -897,11 +899,9 @@ bool AppState::AssignSkeletonToCast(int castIdx, const DiscoveredSkeleton& ds,
         fwrite(hkxBuf.data(), 1, hkxBuf.size(), tf);
         fclose(tf);
 
-        char* xmlBuf = nullptr; int xmlLen = 0;
-        if (DotNetHost::HkxToXml(tmpPath.c_str(), &xmlBuf, &xmlLen, errOut, errLen)) {
-            ok = LoadHavokSkeletonXmlFromBuffer(xmlBuf, xmlLen, sk, errOut, errLen);
-            DotNetHost::FreeBuffer(xmlBuf);
-        }
+        HkxXmlBuf xml;
+        if (DotNetHost::HkxToXml(tmpPath.c_str(), &xml.data, &xml.len, errOut, errLen))
+            ok = LoadHavokSkeletonXmlFromBuffer(xml.data, xml.len, sk, errOut, errLen);
         DeleteFileA(tmpPath.c_str());
     } else {
         // ── Loose file ────────────────────────────────────────────────────────
@@ -913,11 +913,9 @@ bool AppState::AssignSkeletonToCast(int castIdx, const DiscoveredSkeleton& ds,
                     "HKX import unavailable — .NET 10 runtime or SctBridge.dll not found");
                 return false;
             }
-            char* xmlBuf = nullptr; int xmlLen = 0;
-            if (DotNetHost::HkxToXml(ds.path.c_str(), &xmlBuf, &xmlLen, errOut, errLen)) {
-                ok = LoadHavokSkeletonXmlFromBuffer(xmlBuf, xmlLen, sk, errOut, errLen);
-                DotNetHost::FreeBuffer(xmlBuf);
-            }
+            HkxXmlBuf xml;
+            if (DotNetHost::HkxToXml(ds.path.c_str(), &xml.data, &xml.len, errOut, errLen))
+                ok = LoadHavokSkeletonXmlFromBuffer(xml.data, xml.len, sk, errOut, errLen);
         } else {
             ok = LoadHavokSkeletonXml(ds.path.c_str(), sk, errOut, errLen);
         }

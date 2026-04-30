@@ -6,10 +6,14 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 // ── Minimal hostfxr types (from Microsoft's hostfxr.h, stable C interface) ────
@@ -63,7 +67,8 @@ using CellSearchFn          = int  (*)(const char* query, int maxResults, char**
 using CellGetRefsFn         = int  (*)(const char* formKey, char** outJson, int* outLen);
 using WorldspaceSearchFn    = int  (*)(const char* query, int maxResults, char** outJson, int* outLen);
 using ExteriorCellGetRefsFn = int  (*)(const char* wsFormKey, int cellX, int cellY, char** outJson, int* outLen);
-using LandGetDataFn         = int  (*)(const char* wsFormKey, int cellX, int cellY, char** outJson, int* outLen);
+using LandGetDataFn                  = int  (*)(const char* wsFormKey, int cellX, int cellY, char** outJson, int* outLen);
+using WorldspaceGetTerrainBulkFn     = int  (*)(const char* wsFormKey, uint8_t** outData, int* outLen);
 
 // ── Module-level state ────────────────────────────────────────────────────────
 
@@ -86,8 +91,9 @@ static CellSearchFn          s_cellSearch          = nullptr;
 static CellGetRefsFn         s_cellGetRefs         = nullptr;
 static WorldspaceSearchFn    s_worldspaceSearch    = nullptr;
 static ExteriorCellGetRefsFn s_exteriorCellGetRefs = nullptr;
-static LandGetDataFn         s_landGetData         = nullptr;
-static LastErrorFn           s_pluginLastError     = nullptr;
+static LandGetDataFn                 s_landGetData                = nullptr;
+static WorldspaceGetTerrainBulkFn    s_worldspaceGetTerrainBulk   = nullptr;
+static LastErrorFn                   s_pluginLastError            = nullptr;
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -280,7 +286,8 @@ bool DotNetHost::Init(char* errOut, int errLen)
     loadPlugin(L"CellGetRefs",         reinterpret_cast<void**>(&s_cellGetRefs));
     loadPlugin(L"WorldspaceSearch",    reinterpret_cast<void**>(&s_worldspaceSearch));
     loadPlugin(L"ExteriorCellGetRefs", reinterpret_cast<void**>(&s_exteriorCellGetRefs));
-    loadPlugin(L"LandGetData",         reinterpret_cast<void**>(&s_landGetData));
+    loadPlugin(L"LandGetData",                reinterpret_cast<void**>(&s_landGetData));
+    loadPlugin(L"WorldspaceGetTerrainBulk",   reinterpret_cast<void**>(&s_worldspaceGetTerrainBulk));
 
     return true;
 }
@@ -549,4 +556,111 @@ bool DotNetHost::LandGetData(const char* worldspaceFormKey, int cellX, int cellY
     }
     if (s_pluginLastError && errOut && errLen > 0) s_pluginLastError(errOut, errLen);
     return false;
+}
+
+bool DotNetHost::WorldspaceGetTerrainBulk(
+    const char* wsFormKey,
+    std::map<std::pair<int,int>, LandRecord>& outTiles,
+    char* errOut, int errLen)
+{
+    outTiles.clear();
+    if (!s_pluginReady) {
+        std::snprintf(errOut, errLen, "plugin bridge not initialized");
+        return false;
+    }
+    if (!s_worldspaceGetTerrainBulk) {
+        std::snprintf(errOut, errLen,
+            "WorldspaceGetTerrainBulk not available — rebuild SctBridge");
+        return false;
+    }
+
+    uint8_t* buf = nullptr; int bLen = 0;
+    if (s_worldspaceGetTerrainBulk(wsFormKey, &buf, &bLen) != 0) {
+        if (s_pluginLastError && errOut && errLen > 0) s_pluginLastError(errOut, errLen);
+        return false;
+    }
+
+    // ── Parse SLRT binary blob ─────────────────────────────────────────────────
+    // magic(4) + version(4) + cellCount(4) + per-cell records
+    bool ok = false;
+    do {
+        if (bLen < 12) break;
+        const uint8_t* p   = buf;
+        const uint8_t* end = buf + bLen;
+
+        constexpr uint32_t kMagic   = 0x54524C53u; // "SLRT"
+        constexpr uint32_t kVersion = 2u;
+        uint32_t magic, version, cellCount;
+        std::memcpy(&magic,     p,     4); p += 4;
+        std::memcpy(&version,   p,     4); p += 4;
+        std::memcpy(&cellCount, p,     4); p += 4;
+
+        if (magic != kMagic) {
+            std::snprintf(errOut, errLen, "WorldspaceGetTerrainBulk: bad magic 0x%08X", magic);
+            break;
+        }
+        if (version != kVersion) {
+            std::snprintf(errOut, errLen, "WorldspaceGetTerrainBulk: unsupported version %u", version);
+            break;
+        }
+
+        constexpr int kHeightsBytes = 33 * 33 * sizeof(float); // 4356
+        constexpr int kColorsBytes  = 33 * 33 * 3;             // 3267
+
+        ok = true;
+        for (uint32_t i = 0; i < cellCount; ++i) {
+            // int16 cellX + int16 cellY
+            if (p + 4 > end) { ok = false; break; }
+            int16_t cx, cy;
+            std::memcpy(&cx, p, 2); p += 2;
+            std::memcpy(&cy, p, 2); p += 2;
+
+            // float[1089] heights
+            if (p + kHeightsBytes > end) { ok = false; break; }
+            LandRecord land{};
+            std::memcpy(land.heights, p, kHeightsBytes); p += kHeightsBytes;
+
+            // uint8 hasColors
+            if (p + 1 > end) { ok = false; break; }
+            land.hasColors = (*p++ != 0);
+
+            if (land.hasColors) {
+                if (p + kColorsBytes > end) { ok = false; break; }
+                std::memcpy(land.colors, p, kColorsBytes); p += kColorsBytes;
+            }
+
+            // Base texture: uint16 pathLen + [char[] path + float tileRate]
+            if (p + 2 > end) { ok = false; break; }
+            uint16_t pathLen = 0;
+            std::memcpy(&pathLen, p, 2); p += 2;
+            if (pathLen > 0) {
+                if (p + pathLen + 4 > end) { ok = false; break; }
+                land.baseTexPath.assign(reinterpret_cast<const char*>(p), pathLen);
+                p += pathLen;
+                std::memcpy(&land.texTileRate, p, 4); p += 4;
+            }
+
+            // Alpha layers: uint8 count + per-layer data
+            if (p + 1 > end) { ok = false; break; }
+            const uint8_t alphaCount = *p++;
+            constexpr int kBlendBytes = 33 * 33 * 4; // float[1089]
+            for (uint8_t ai = 0; ai < alphaCount && ok; ++ai) {
+                if (p + 2 > end) { ok = false; break; }
+                uint16_t aPathLen = 0;
+                std::memcpy(&aPathLen, p, 2); p += 2;
+                if (p + aPathLen + 4 + kBlendBytes > end) { ok = false; break; }
+                TerrainAlphaLayer layer;
+                layer.path.assign(reinterpret_cast<const char*>(p), aPathLen);
+                p += aPathLen;
+                std::memcpy(&layer.tileRate, p, 4); p += 4;
+                std::memcpy(layer.blendMap.data(), p, kBlendBytes); p += kBlendBytes;
+                land.alphaLayers.push_back(std::move(layer));
+            }
+
+            outTiles[{(int)cx, (int)cy}] = std::move(land);
+        }
+    } while (false);
+
+    FreeBuffer(buf);
+    return ok;
 }

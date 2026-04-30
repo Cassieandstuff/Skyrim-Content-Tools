@@ -4,6 +4,8 @@ file(GLOB_RECURSE SCT_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
 add_executable(SkyrimContentTools WIN32 ${SCT_SOURCES} ${SCT_HEADERS})
 
 target_compile_features(SkyrimContentTools PRIVATE cxx_std_23)
+target_precompile_headers(SkyrimContentTools PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/pch.h>")
 
 target_include_directories(SkyrimContentTools PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"

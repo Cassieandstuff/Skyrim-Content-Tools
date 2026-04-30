@@ -1,6 +1,6 @@
 # Skyrim Content Tools — Design Document
 
-> **Status as of 2026-04-25.** Living document — update when decisions are made or assumptions change.
+> **Status as of 2026-04-30.** Living document — update when decisions are made or assumptions change.
 
 ---
 
@@ -56,8 +56,10 @@ Current panels:
 | Panel | Class | Status |
 |---|---|---|
 | Bin (Clips + Cast tabs) | `BinPanel` | ✅ Working |
-| Viewport | `ViewportPanel` | ✅ Working |
-| Timeline | `TimelinePanel` | ✅ Working |
+| Plugin Browser | `PluginBrowserPanel` | ✅ Working (NPC search + import from ESP/ESM) |
+| Viewport | `ViewportPanel` | ✅ Working — FBO render-to-texture, multi-actor, textured NIFs, terrain, NIF streaming, distance culling, gamepad freecam |
+| Timeline | `TimelinePanel` | ✅ Working — AnimClip + FaceData evaluation, scene tracks scaffolded |
+| Inspector | `InspectorPanel` | ✅ Working — actor props, morph sliders, cell ref inspector |
 | Scene Graph | `SceneGraphPanel` | 🔲 Stub |
 | Animator | `AnimatorPanel` | 🔲 Stub |
 | NIF Editor | `NifEditorPanel` | 🔲 Stub |
@@ -605,73 +607,94 @@ For the authoring surface, the Paths viewport tab visualizes the root bone path 
 
 ## 11. Phase Roadmap
 
-### Phase 1 — Animation Foundation ✅ Complete
-- HKX binary → XML via SctBridge/DotNetHost
-- Skeleton loading (HKX + XML)
-- Animation clip loading and evaluation
-- FK pose solving
-- Single-actor viewport with orbit camera
-- Basic transport controls (play/pause/loop/scrub)
+> Phases were not completed in the documented order — environment rendering shipped before export.
+> Checkboxes reflect actual build state as of 2026-04-30.
 
-### Phase 2 — NLE Timeline & Multi-Actor 🔄 In Progress
+### Phase 1 — Animation Foundation ✅ Complete
+- [x] HKX binary → XML via SctBridge/DotNetHost
+- [x] Skeleton loading (HKX + XML)
+- [x] Animation clip loading and evaluation
+- [x] FK pose solving
+- [x] Single-actor viewport with orbit camera
+- [x] Basic transport controls (play/pause/loop/scrub)
+
+### Phase 2 — NLE Timeline & Multi-Actor ✅ Largely Complete
 - [x] IPanel / TabRegistry / TrackRegistry architecture
-- [x] AppState replacing SceneState
-- [x] Multi-actor support in viewport (works with any creature type automatically)
+- [x] AppState as single shared state
+- [x] Multi-actor support in viewport (any creature type automatically)
 - [x] NLE timeline: ruler, transport bar, scrubber
-- [x] Clip drag-drop from Bin onto actor lanes
+- [x] Clip drag-drop from Bin onto actor lanes with blend evaluation
 - [x] Skeleton type grouping in Clips bin
 - [x] Data folder scan + skeleton picker modal
 - [x] Type-aware drag feedback + drop rejection
 - [x] Cast tab with actor management
+- [x] FaceData track evaluation (ARKit morph weights from HKX annotation clips)
+- [x] Inspector panel — actor props, morph sliders, cell ref inspector, lighting controls
 - [ ] Scene Graph panel (node canvas, imgui-node-editor)
-- [ ] Clip blending UI (blend in/out handles, multi-item overlap visualisation)
-- [ ] Sequence save/load (SCT project file format)
+- [ ] Clip blending UI (blend in/out handles visualised in timeline)
+- [ ] Sequence save/load (`.sct` project file format)
 
-### Phase 3 — NIF Mesh Rendering
-- [ ] Integrate **nifly** (ousnius/nifly) as CMake dependency — NIF read/write for both LE (stream=83) and SE (stream=100)
-- [ ] `BSBehaviorGraphExtraData` reader via nifly (enables invisible skeleton resolution from NIF drop; see §5.1)
-- [ ] Render-to-texture pipeline (OpenGL FBO → ImGui::Image in viewport)
-- [ ] Static (unskinned) NIF rendering — `BSTriShape` vertex + index data
-- [ ] Skinned mesh rendering — `BSSkin::Instance` bone names + inverse bind matrices × Havok pose world transforms (§5.3)
-- [ ] Basic PBR: diffuse texture from `BSLightingShaderProperty` → `BSShaderTextureSet`
-- [ ] Compiled facegeom NIF loading — `BSDynamicTriShape` + read `BSFaceGenBaseMorphExtraData` as base vertex positions
-- [ ] Custom thin TRI parser (FRTRI003, read-only) — load expression TRI delta arrays by morph name (§5.4)
-- [ ] `FaceMorphWeights` in AppState per actor — 52-slot float array keyed by ARKit blend shape name (see §5.4)
-- [ ] Per-frame expression blend loop on `BSDynamicTriShape` vertex buffers (§5.4)
+### Phase 3 — NIF Mesh Rendering ✅ Complete
+- [x] nifly integrated as CMake dependency (FetchContent)
+- [x] `BSBehaviorGraphExtraData` reader — skeleton path resolution from NIF drop
+- [x] Render-to-texture pipeline (OpenGL FBO → `ImGui::Image` in viewport)
+- [x] Static (unskinned) NIF rendering — `BSTriShape` vertex + index data, textured
+- [x] Skinned mesh rendering — `BSSkin::Instance` + inverse bind matrices × Havok pose
+- [x] Diffuse texture from `BSLightingShaderProperty` → `BSShaderTextureSet` via BSA
+- [x] Compiled facegeom NIF loading — `BSDynamicTriShape` + `BSFaceGenBaseMorphExtraData`
+- [x] Custom thin TRI parser (FRTRI003, read-only) — ARKit morph delta arrays
+- [x] Per-frame expression blend loop on `BSDynamicTriShape` vertex buffers
+- [x] Multi-shape alpha blend modes (AlphaTest, AlphaBlend, Additive, AlphaTestAndBlend)
+- [x] NIF controller animation (`NifAnimClip`, `NifShapeMorphAnim`) — ambient object motion
+- [x] Gamepad freecam — Skyrim TFC-style controller input via GLFW gamepad API
 
-### Phase 4 — Plugin Integration (Mutagen)
-- [ ] Add Mutagen to SctBridge.dll
-- [ ] PluginQuery bridge API: NPC → skeleton path, body NIF paths, facegen NIF path, expression TRI path
-- [ ] "Import Character from Plugin" workflow — resolves NPC_ → HDPT → expression TRI (NAM0=1) automatically
-- [ ] Facegen NIF loading (compiled facegeom NIF with baked chargen verts in `BSFaceGenBaseMorphExtraData`)
-- [ ] Placed object reading (REFR → NIF path + world transform)
+### Phase 4 — Plugin Integration (Mutagen) ✅ Complete
+- [x] Mutagen added to SctBridge.dll
+- [x] PluginQuery bridge API: NPC_ → skeleton path, body/hands/feet/head NIF paths, facegen NIF, head part NIFs
+- [x] "Import Character from Plugin" workflow in Plugin Browser panel
+- [x] Facegen NIF loading (compiled facegeom with baked chargen verts)
+- [x] Placed object reading (REFR → NIF path + world transform via `sct_cell_get_refs`)
 
-### Phase 5 — Scene Environment
-- [ ] Terrain: LAND record heightfield via Mutagen (vertex-color only, 5×5 cell radius)
-- [ ] Context NIF placement (bounding box proxies for radius)
-- [ ] "Import as Scene Asset" promotion for focal objects
+### Phase 5 — Scene Environment ✅ Complete
+- [x] Terrain: LAND heightfield + VCLR vertex colors via Mutagen bridge (`sct_land_get_data`)
+- [x] 6-layer VTXT terrain texture blending — `TerrainSurface` + `DrawTerrainTile`, custom terrain shader with blend map chain
+- [x] Terrain bulk streaming — Chebyshev-sorted background worker, 500-tile cap, ring-0 synchronous upgrade
+- [x] Full-worldspace NIF placement streaming — `ExteriorNifStreamWorker` iterates every cell from terrain bulk result, cross-worker dedup
+- [x] Distance-based NIF cull — per-instance `dot` test against camera target, logarithmic slider UI (1024–131072 u)
+- [x] Two-pass cell render (opaque + alpha-blend), ray-AABB picking, NIF animation evaluation in cell environment
+- [ ] "Import as Scene Asset" promotion for focal objects (still manual/workflow-based)
 - [ ] Prop system (PropEntry, PropTrackGroup, NodeAnim track)
-- [ ] Light placement + glyph rendering
+- [ ] Light glyph rendering in viewport
 
-### Phase 6 — Camera & Lights
-- [ ] Camera items on Camera track (FOV, transform, animated)
-- [ ] Light items on Light track (color, intensity, radius, animated)
-- [ ] GPU light contribution in render-to-texture viewport
-- [ ] Camera export format decision
+### Phase 6 — Camera Tracks 🔄 In Progress
+- [ ] `CameraShot` data model (eye position, yaw, pitch, FOV) + `AppState::cameraShots[]` pool
+- [ ] `Sequence::EvaluateCameraTrack(t)` — hard-cut semantics, returns active shot index
+- [ ] Camera lane capture button — "⊕ Capture" snaps current viewport camera as a new shot at playhead
+- [ ] Timeline Camera items — teal blocks, right-click menu (rename, set from camera, delete)
+- [ ] Viewport Cameras mode — drives render camera from active `CameraShot`; frustum gizmos in Scene mode
+- [ ] Inspector Camera shot panel — name, position, yaw/pitch, FOV, "Capture from Viewport" button
+- [ ] `AppState::viewportCamera` mirror — ViewportPanel writes its Camera each frame; used by capture flow
+- [ ] Light items on Light track (color, intensity, radius)
+- [ ] GPU point light contribution in scene renderer
 
 ### Phase 7 — Export
 - [ ] Per-actor animation HKX export — one clip per Beat node per actor (via HKX2E/SctBridge)
-- [ ] Per-actor behavior HKX export — scene node graph → `hkbStateMachine` topology (via HKX2E/SctBridge)
+- [ ] Per-actor behavior HKX export — scene node graph → `hkbStateMachine` topology
 - [ ] `.sctface` face data export — 52-channel ARKit float array per Beat per actor
-- [ ] YAML sidecar export — actor identities, world placements, wait node parameters, face data file references
+- [ ] YAML sidecar export — actor identities, world placements, wait node parameters, face data references
 - [ ] NPC_ record creation via Mutagen+SctBridge
-- [ ] Export dialog: per-target checklist (behavior HKX package, animation HKX package, `.sctface` files, YAML sidecar, optional NPC_ record). Progress log in Console panel.
+- [ ] Export dialog: per-target checklist + progress log in Console panel
 
 ### Phase 8 — Anim Editor Tab
 - [ ] Bone Editor viewport mode
 - [ ] Per-bone transform editing
 - [ ] Clip authoring (create new clips from pose keyframes)
 - [ ] AnimatorPanel (state machine visualisation, imgui-node-editor)
+
+### Phase 9 — Scene Graph
+- [ ] Scene Graph panel (node canvas, imgui-node-editor)
+- [ ] Beat nodes, Wait nodes (QTE / Struggle / Choice), sequential and branching edges
+- [ ] Sequence save/load (`.sct` project file format)
 
 ---
 

@@ -109,6 +109,18 @@ typedef struct __GLsync *GLsync;
 #define GL_REPEAT                         0x2901
 #define GL_TEXTURE_MAX_LEVEL              0x813D
 #define GL_TEXTURE0                       0x84C0
+#define GL_TEXTURE1                       0x84C1
+#define GL_TEXTURE2                       0x84C2
+#define GL_TEXTURE3                       0x84C3
+#define GL_TEXTURE4                       0x84C4
+#define GL_TEXTURE5                       0x84C5
+#define GL_TEXTURE6                       0x84C6
+#define GL_TEXTURE7                       0x84C7
+#define GL_TEXTURE8                       0x84C8
+#define GL_TEXTURE9                       0x84C9
+#define GL_TEXTURE10                      0x84CA
+#define GL_RED                            0x1903
+#define GL_R32F                           0x8228
 
 /* framebuffer */
 #define GL_FRAMEBUFFER                    0x8D40
@@ -209,6 +221,8 @@ typedef void   (APIENTRYP PFNGLUNIFORM4FVPROC)(GLint location, GLsizei count, co
 typedef void   (APIENTRYP PFNGLUNIFORM3FVPROC)(GLint location, GLsizei count, const GLfloat* value);
 typedef void   (APIENTRYP PFNGLUNIFORM1IPROC)(GLint location, GLint v0);
 typedef void   (APIENTRYP PFNGLUNIFORM1FPROC)(GLint location, GLfloat v0);
+typedef void   (APIENTRYP PFNGLUNIFORM1IVPROC)(GLint location, GLsizei count, const GLint* value);
+typedef void   (APIENTRYP PFNGLUNIFORM1FVPROC)(GLint location, GLsizei count, const GLfloat* value);
 typedef void   (APIENTRYP PFNGLUNIFORMMATRIX4FVPROC)(GLint location, GLsizei count, GLboolean transpose, const GLfloat* value);
 typedef void   (APIENTRYP PFNGLDEPTHMASKPROC)(GLboolean flag);
 typedef GLboolean (APIENTRYP PFNGLISENABLED)(GLenum cap);
@@ -273,6 +287,8 @@ extern PFNGLGETPROGRAMINFOLOGPROC       glad_glGetProgramInfoLog;
 extern PFNGLGETUNIFORMLOCATIONPROC      glad_glGetUniformLocation;
 extern PFNGLUNIFORM1IPROC               glad_glUniform1i;
 extern PFNGLUNIFORM1FPROC               glad_glUniform1f;
+extern PFNGLUNIFORM1IVPROC              glad_glUniform1iv;
+extern PFNGLUNIFORM1FVPROC              glad_glUniform1fv;
 extern PFNGLUNIFORM4FPROC               glad_glUniform4f;
 extern PFNGLUNIFORM4FVPROC              glad_glUniform4fv;
 extern PFNGLUNIFORM3FVPROC              glad_glUniform3fv;
@@ -338,6 +354,8 @@ extern PFNGLRENDERBUFFERSTORAGEPROC     glad_glRenderbufferStorage;
 #define glGetUniformLocation      glad_glGetUniformLocation
 #define glUniform1i               glad_glUniform1i
 #define glUniform1f               glad_glUniform1f
+#define glUniform1iv              glad_glUniform1iv
+#define glUniform1fv              glad_glUniform1fv
 #define glUniform4f               glad_glUniform4f
 #define glUniform4fv              glad_glUniform4fv
 #define glUniform3fv              glad_glUniform3fv

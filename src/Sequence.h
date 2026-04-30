@@ -79,6 +79,11 @@ struct Sequence {
     // Callers must resize out to at least state.actors.size() before calling.
     void Evaluate(float t, AppState& state, std::vector<ActorEval>& out) const;
 
+    // Find the active camera shot index at time t.
+    // Returns the assetIndex of the Camera lane item whose range covers t,
+    // or -1 if no shot is active.  Uses last-started semantics for overlaps.
+    int EvaluateCameraTrack(float t) const;
+
     // Structure helpers
     void EnsureActorGroup(int actorIndex);
     void EnsureSceneTrack(TrackType type);

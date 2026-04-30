@@ -2,6 +2,7 @@
 #include "AppState.h"
 #include "AnimClip.h"
 #include "FaceClip.h"
+#include "core/math/Interpolation.h"
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
@@ -54,12 +55,8 @@ void RegisterAllTrackTypes()
                 if (item.assetIndex < 0 || item.assetIndex >= (int)state.clips.size())
                     continue;
 
-                float w = 1.f;
-                const float elapsed = t - item.seqStart;
-                const float remain  = item.SeqEnd() - t;
-                if (item.blendIn  > 0.f) w = std::min(w, elapsed / item.blendIn);
-                if (item.blendOut > 0.f) w = std::min(w, remain  / item.blendOut);
-                w = std::clamp(w, 0.f, 1.f);
+                const float w = Interp::BlendWeight(t, item.seqStart, item.SeqEnd(),
+                                                    item.blendIn, item.blendOut);
 
                 active.push_back({ &item, w, t - item.seqStart + item.trimIn });
             }

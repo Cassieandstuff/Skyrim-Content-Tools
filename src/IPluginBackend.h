@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -37,6 +38,30 @@ struct WorldspaceRecord {
     std::string editorId;
     std::string name;         // FULL display name; may be empty
     std::string pluginSource; // e.g. "Skyrim.esm"
+};
+
+// One alpha-blended landscape texture layer (from ATXT + VTXT).
+// blendMap is a pre-stitched 33×33 float grid (row-major, 0.0–1.0) covering
+// the full cell by assembling the four 17×17 quadrant VTXT grids.
+struct TerrainAlphaLayer {
+    std::string              path;           // data-relative, Textures\ prefix guaranteed
+    float                    tileRate = 6.f;
+    std::array<float, 33*33> blendMap = {};  // opacity at each terrain vertex
+};
+
+// Decoded VHGT/VCLR/BTXT/ATXT terrain data for one exterior cell.
+// Heights are world-space Z values in Skyrim units.
+// Vertex colors are optional (hasColors == false if no VCLR sub-record).
+struct LandRecord {
+    float   heights[33][33]   = {};   // world-space Z, row-major
+    bool    hasColors         = false;
+    uint8_t colors[33][33][3] = {};   // RGB, 0-255
+    // Base landscape texture (BTXT layer → LTEX → TXST diffuse path).
+    // Empty string = no texture; data-relative, Textures\ prefix guaranteed.
+    std::string baseTexPath;
+    float       texTileRate   = 6.f;  // UV tiling multiplier (Skyrim default 6.0)
+    // Alpha-blended overlay layers (ATXT + VTXT), up to 5 unique textures per cell.
+    std::vector<TerrainAlphaLayer> alphaLayers;
 };
 
 // A CELL record found by sct_cell_search.

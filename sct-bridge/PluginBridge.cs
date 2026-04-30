@@ -604,39 +604,292 @@ public static class PluginBridge
             var heights = new float[33 * 33];
             if (vhgt is not null)
             {
-                // HeightMap is ReadOnlyMemorySlice<byte>; values are signed deltas
-                // so each byte must be reinterpreted as sbyte before accumulation.
+                // HeightMap is IReadOnlyArray2d<byte> indexed by P2Int(col, row).
+                // Values are signed height deltas — cast each byte to sbyte.
                 var raw    = vhgt.HeightMap;
                 float col0 = vhgt.Offset;
-                for (int y = 0; y < 33; y++)
+                for (int r = 0; r < 33; r++)
                 {
-                    col0 += (sbyte)raw[y * 33 + 0];
+                    col0 += (sbyte)raw[new Noggog.P2Int(0, r)];
                     float h = col0;
-                    heights[y * 33 + 0] = h * 8.0f;
-                    for (int x = 1; x < 33; x++)
+                    heights[r * 33 + 0] = h * 8.0f;
+                    for (int c = 1; c < 33; c++)
                     {
-                        h += (sbyte)raw[y * 33 + x];
-                        heights[y * 33 + x] = h * 8.0f;
+                        h += (sbyte)raw[new Noggog.P2Int(c, r)];
+                        heights[r * 33 + c] = h * 8.0f;
                     }
                 }
             }
 
             // ── VCLR decode ───────────────────────────────────────────────────
-            // VertexColors is a ReadOnlyMemorySlice<byte>? directly on ILandscapeGetter
-            // (VCLR is raw 33×33×3 = 3267 RGB bytes with no sub-record wrapper).
-            var colors = Array.Empty<byte>();
-            if (landscape.VertexColors is { } vclrRaw && vclrRaw.Length > 0)
+            // VertexColors is IReadOnlyArray2d<P3UInt8> indexed by P2Int(col, row).
+            // P3UInt8.X=R, .Y=G, .Z=B.  Flatten to row-major int[33*33*3] (values 0-255).
+            // int[] not byte[]: System.Text.Json encodes byte[] as Base64 which C++ can't parse.
+            var colors = Array.Empty<int>();
+            if (landscape.VertexColors is { } vclrData)
             {
-                var len = Math.Min(vclrRaw.Length, 33 * 33 * 3);
-                colors  = new byte[len];
-                for (int i = 0; i < len; i++)
-                    colors[i] = vclrRaw[i];
+                colors = new int[33 * 33 * 3];
+                for (int r = 0; r < 33; r++)
+                for (int c = 0; c < 33; c++)
+                {
+                    var px = vclrData[new Noggog.P2Int(c, r)];
+                    int i  = (r * 33 + c) * 3;
+                    colors[i]     = px.X;
+                    colors[i + 1] = px.Y;
+                    colors[i + 2] = px.Z;
+                }
             }
 
             return WriteJson(new LandData { Heights = heights, Colors = colors },
                              outJson, outLen);
         }
         catch (Exception ex) { s_lastError = ex.Message; return -1; }
+    }
+
+    // ── Worldspace get terrain bulk ───────────────────────────────────────────
+    //
+    // Returns all LAND records for a worldspace as a compact binary blob (SLRT v2).
+    // Header: magic(4) "SLRT" + version(4) 2 + cellCount(4).
+    // Per cell: int16 cellX + int16 cellY
+    //   + float[1089] heights
+    //   + uint8 hasColors + [if hasColors] uint8[3267] colors
+    //   + uint16 basePathLen + [if >0] char[basePathLen] + float baseTileRate
+    //   + uint8 alphaLayerCount (0-5)
+    //   + for each alpha layer:
+    //       uint16 pathLen + char[pathLen] path + float tileRate
+    //       + float[1089] blendMap (33×33, row-major, 0.0-1.0)
+    // All values little-endian.  Caller frees via sct_free_buffer.
+    //
+    // Returns 0 on success, -1 on failure.
+
+    [UnmanagedCallersOnly(EntryPoint = "sct_worldspace_get_terrain_bulk")]
+    public static unsafe int WorldspaceGetTerrainBulk(byte* wsFormKeyUtf8,
+                                                       byte** outData, int* outLen)
+    {
+        *outData = null;
+        *outLen  = 0;
+        try
+        {
+            if (s_loadedMods.Count == 0 || s_linkCache is null)
+                throw new InvalidOperationException("no plugin loaded");
+
+            var wsFormKeyStr = Marshal.PtrToStringUTF8((IntPtr)wsFormKeyUtf8)
+                               ?? throw new ArgumentException("null worldspace formKey");
+
+            if (!FormKey.TryFactory(wsFormKeyStr, out var wsFormKey))
+                throw new ArgumentException($"invalid worldspace form key: '{wsFormKeyStr}'");
+
+            IWorldspaceGetter? ws = null;
+            foreach (var mod in s_loadedMods.AsEnumerable().Reverse())
+            {
+                ws = mod.Worldspaces.FirstOrDefault(w => w.FormKey == wsFormKey);
+                if (ws is not null) break;
+            }
+            if (ws is null)
+                throw new KeyNotFoundException($"worldspace {wsFormKeyStr} not found");
+
+            // Collect all exterior cells that have a LAND record.
+            var cells = ws.SubCells
+                .SelectMany(b => b.Items)
+                .SelectMany(sb => sb.Items)
+                .Where(c => c.Landscape is not null && c.Grid is not null)
+                .ToList();
+
+            using var ms = new System.IO.MemoryStream();
+            using var w  = new System.IO.BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+
+            // Header
+            w.Write((uint)0x54524C53u); // "SLRT"
+            w.Write((uint)2u);          // version 2: includes alpha layers
+            w.Write((uint)cells.Count);
+
+            foreach (var cell in cells)
+            {
+                w.Write((short)cell.Grid!.Point.X);
+                w.Write((short)cell.Grid!.Point.Y);
+                WriteCellTerrain(w, cell.Landscape!);
+            }
+
+            w.Flush();
+            var bytes = ms.ToArray();
+            var ptr   = (byte*)Marshal.AllocCoTaskMem(bytes.Length);
+            bytes.AsSpan().CopyTo(new Span<byte>(ptr, bytes.Length));
+            *outData    = ptr;
+            *outLen     = bytes.Length;
+            s_lastError = null;
+            return 0;
+        }
+        catch (Exception ex) { s_lastError = ex.Message; return -1; }
+    }
+
+    /// <summary>
+    /// Writes the VHGT/VCLR/BTXT terrain data for one LAND record into a BinaryWriter.
+    /// Format: float[1089] heights + uint8 hasColors + [if hasColors] uint8[3267] colors
+    ///         + uint16 pathLen + [if pathLen>0] char[pathLen] texPath + float tileRate.
+    /// </summary>
+    private static void WriteCellTerrain(System.IO.BinaryWriter w, ILandscapeGetter landscape)
+    {
+        // ── VHGT decode ───────────────────────────────────────────────────────
+        var vhgt    = landscape.VertexHeightMap;
+        var heights = new float[33 * 33];
+        if (vhgt is not null)
+        {
+            var raw    = vhgt.HeightMap;
+            float col0 = vhgt.Offset;
+            for (int r = 0; r < 33; r++)
+            {
+                col0 += (sbyte)raw[new Noggog.P2Int(0, r)];
+                float h = col0;
+                heights[r * 33 + 0] = h * 8.0f;
+                for (int c = 1; c < 33; c++)
+                {
+                    h += (sbyte)raw[new Noggog.P2Int(c, r)];
+                    heights[r * 33 + c] = h * 8.0f;
+                }
+            }
+        }
+        foreach (var f in heights) w.Write(f);
+
+        // ── VCLR ─────────────────────────────────────────────────────────────
+        if (landscape.VertexColors is { } vclrData)
+        {
+            w.Write((byte)1); // hasColors = true
+            for (int r = 0; r < 33; r++)
+            for (int c = 0; c < 33; c++)
+            {
+                var px = vclrData[new Noggog.P2Int(c, r)];
+                w.Write(px.X);
+                w.Write(px.Y);
+                w.Write(px.Z);
+            }
+        }
+        else
+        {
+            w.Write((byte)0); // hasColors = false
+        }
+
+        // ── Base texture path (BTXT layer 0 → LTEX → TXST → Diffuse) ─────────
+        // BTXT records are base layers (not alpha overlays); filter by type.
+        string? baseDiffusePath = null;
+        try
+        {
+            if (landscape.Layers is { } layers && s_linkCache is not null)
+            {
+                var baseLayer = layers.FirstOrDefault(l => l is not IAlphaLayerGetter);
+                if (baseLayer is not null &&
+                    baseLayer.Header.Texture.TryResolve<ILandscapeTextureGetter>(s_linkCache, out var ltex) &&
+                    ltex.TextureSet.TryResolve<ITextureSetGetter>(s_linkCache, out var txst))
+                {
+                    baseDiffusePath = txst.Diffuse?.GivenPath;
+                }
+            }
+        }
+        catch { /* broken record — skip texture */ }
+
+        if (!string.IsNullOrEmpty(baseDiffusePath))
+        {
+            if (!baseDiffusePath.StartsWith("Textures\\", StringComparison.OrdinalIgnoreCase) &&
+                !baseDiffusePath.StartsWith("Textures/",  StringComparison.OrdinalIgnoreCase))
+                baseDiffusePath = "Textures\\" + baseDiffusePath;
+            var pathBytes = Encoding.UTF8.GetBytes(baseDiffusePath);
+            w.Write((ushort)pathBytes.Length);
+            w.Write(pathBytes);
+            w.Write(6.0f); // UV tile rate — Skyrim terrain default
+        }
+        else
+        {
+            w.Write((ushort)0);
+        }
+
+        // ── Alpha layers (ATXT + VTXT) ────────────────────────────────────────
+        // Collect unique alpha textures across all 4 quadrants.  For each unique
+        // texture, stitch the sparse per-quadrant VTXT data into a dense 33×33
+        // float blend map (same vertex grid as VHGT/VCLR).
+        //
+        // Quadrant offsets in the 33×33 grid (row increases northward in Skyrim):
+        //   BottomLeft(0)  → rowOff=0,  colOff=0
+        //   BottomRight(1) → rowOff=0,  colOff=16
+        //   UpperLeft(2)   → rowOff=16, colOff=0
+        //   UpperRight(3)  → rowOff=16, colOff=16
+        var alphaTexPaths  = new List<string>();
+        var alphaBlendMaps = new List<float[,]>();
+
+        try
+        {
+            if (landscape.Layers is { } allLayers && s_linkCache is not null)
+            {
+                foreach (var layer in allLayers.OfType<IAlphaLayerGetter>())
+                {
+                    // Resolve ATXT texture path
+                    string? aPath = null;
+                    try
+                    {
+                        if (layer.Header.Texture.TryResolve<ILandscapeTextureGetter>(s_linkCache, out var ltex) &&
+                            ltex.TextureSet.TryResolve<ITextureSetGetter>(s_linkCache, out var txst))
+                        {
+                            aPath = txst.Diffuse?.GivenPath;
+                            if (!string.IsNullOrEmpty(aPath) &&
+                                !aPath.StartsWith("Textures\\", StringComparison.OrdinalIgnoreCase) &&
+                                !aPath.StartsWith("Textures/",  StringComparison.OrdinalIgnoreCase))
+                                aPath = "Textures\\" + aPath;
+                        }
+                    }
+                    catch { }
+                    if (string.IsNullOrEmpty(aPath)) continue;
+
+                    // Find or create blend-map slot for this texture
+                    int idx = alphaTexPaths.IndexOf(aPath);
+                    if (idx < 0)
+                    {
+                        if (alphaTexPaths.Count >= 5) continue; // cap at 5 alpha layers
+                        idx = alphaTexPaths.Count;
+                        alphaTexPaths.Add(aPath);
+                        alphaBlendMaps.Add(new float[33, 33]);
+                    }
+
+                    // Quadrant → 33×33 offset
+                    var q = (byte)layer.Header.Quadrant;
+                    int rowOff = (q == 2 || q == 3) ? 16 : 0;
+                    int colOff = (q == 1 || q == 3) ? 16 : 0;
+
+                    // Decode sparse VTXT → dense quadrant 17×17, write into blend map
+                    try
+                    {
+                        if (layer.AlphaLayerData is { } entries)
+                        {
+                            var bm = alphaBlendMaps[idx];
+                            foreach (var entry in entries)
+                            {
+                                int pos = entry.Position;
+                                int r   = pos / 17;
+                                int c   = pos % 17;
+                                if (r > 16 || c > 16) continue;
+                                // Opacity stored as UInt16; 0x8000 (32768) = fully opaque.
+                                float opacity = (float)entry.Opacity / 32768.0f;
+                                bm[rowOff + r, colOff + c] = Math.Clamp(opacity, 0f, 1f);
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+
+        // Write alpha layers
+        int layerCount = Math.Min(alphaTexPaths.Count, 5);
+        w.Write((byte)layerCount);
+        for (int li = 0; li < layerCount; li++)
+        {
+            var pb = Encoding.UTF8.GetBytes(alphaTexPaths[li]);
+            w.Write((ushort)pb.Length);
+            w.Write(pb);
+            w.Write(6.0f); // tileRate — Skyrim terrain default
+            var bm = alphaBlendMaps[li];
+            for (int r = 0; r < 33; r++)
+            for (int c = 0; c < 33; c++)
+                w.Write(bm[r, c]);
+        }
     }
 
     // ── Error retrieval ───────────────────────────────────────────────────────
@@ -1015,12 +1268,13 @@ public static class PluginBridge
     /// <summary>
     /// Decoded terrain data for one exterior cell.
     /// Heights: 33×33 world-space Z values (row-major, 1089 entries).
-    /// Colors:  flat RGB bytes (3267 entries) or empty if no VCLR.
+    /// Colors:  flat RGB values 0-255 (3267 entries) or empty if no VCLR.
+    /// NOTE: int[] not byte[] — System.Text.Json encodes byte[] as Base64, breaking C++ parsing.
     /// </summary>
     private record LandData
     {
         public float[] Heights { get; init; } = [];
-        public byte[]  Colors  { get; init; } = [];
+        public int[]   Colors  { get; init; } = [];
     }
 
     private static bool MatchesWorldspaceQuery(IWorldspaceGetter ws, string query)

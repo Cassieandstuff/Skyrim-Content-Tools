@@ -1,4 +1,5 @@
 #include "GlSceneRenderer.h"
+#include "ShaderSources.h"
 #include "HavokSkeleton.h"
 #include "Pose.h"
 #include "DdsLoader.h"
@@ -29,126 +30,6 @@ static void GlLog(const char* fmt, ...)
 #endif
     fprintf(stderr, "%s\n", buf);
 }
-
-// ── GLSL sources ──────────────────────────────────────────────────────────────
-
-// Primitive shader: coloured lines and points.
-static const char* kPrimVS = R"(#version 450 core
-layout(location = 0) in vec3 a_pos;
-layout(location = 1) in vec4 a_col;
-uniform mat4 u_vp;
-out vec4 v_col;
-void main() {
-    gl_Position  = u_vp * vec4(a_pos, 1.0);
-    gl_PointSize = 5.0;
-    v_col = a_col;
-}
-)";
-
-static const char* kPrimFS = R"(#version 450 core
-in  vec4 v_col;
-out vec4 f_col;
-void main() { f_col = v_col; }
-)";
-
-// Static mesh shader: Blinn-Phong with controllable scene light.
-static const char* kMeshVS = R"(#version 450 core
-layout(location = 0) in vec3 a_pos;
-layout(location = 1) in vec3 a_norm;
-layout(location = 2) in vec2 a_uv;
-layout(location = 5) in vec3 a_vtxCol;
-uniform mat4 u_mvp;
-uniform mat4 u_model;
-out vec3 v_norm;
-out vec3 v_worldPos;
-out vec2 v_uv;
-out vec3 v_vtxCol;
-void main() {
-    vec4 wp     = u_model * vec4(a_pos, 1.0);
-    gl_Position = u_mvp * vec4(a_pos, 1.0);
-    v_worldPos  = wp.xyz;
-    v_norm   = mat3(transpose(inverse(u_model))) * a_norm;
-    v_uv     = a_uv;
-    v_vtxCol = a_vtxCol;
-}
-)";
-
-// Shared fragment shader for static and skinned meshes.
-// u_alphaMode: 0=opaque 1=alphatest 2=alphablend 3=additive 4=alphatestblend
-// u_useVtxColor: 1 = use v_vtxCol (normalised to 0-1) * tint as base, overrides hasTex
-static const char* kMeshFS = R"(#version 450 core
-in  vec3 v_norm;
-in  vec3 v_worldPos;
-in  vec2 v_uv;
-in  vec3 v_vtxCol;
-uniform vec4      u_tint;
-uniform int       u_hasTex;
-uniform int       u_useVtxColor;     // 1 = use per-vertex colour as base
-uniform sampler2D u_diffuse;
-uniform vec3      u_lightDir;
-uniform vec3      u_lightColor;
-uniform vec3      u_ambientColor;
-uniform vec3      u_camPos;
-uniform int       u_alphaMode;       // 0=opaque 1=alphatest 2=alphablend 3=additive 4=alphatestblend
-uniform float     u_alphaThreshold;  // normalised discard threshold (alphatest/alphatestblend)
-out vec4 f_col;
-void main() {
-    vec3 n = normalize(v_norm);
-
-    vec4 base;
-    if (u_useVtxColor == 1)
-        base = vec4(v_vtxCol, 1.0) * u_tint;
-    else if (u_hasTex == 1)
-        base = texture(u_diffuse, v_uv);
-    else
-        base = u_tint;
-
-    if (u_alphaMode == 0 && base.a < 0.01) base = vec4(0.72, 0.72, 0.76, 1.0);
-    if ((u_alphaMode == 1 || u_alphaMode == 4) && base.a < u_alphaThreshold) discard;
-
-    float diff = max(dot(n, u_lightDir), 0.0);
-
-    vec3 V    = normalize(u_camPos - v_worldPos);
-    vec3 H    = normalize(u_lightDir + V);
-    float spec = pow(max(dot(n, H), 0.0), 32.0) * diff * 0.15;
-
-    vec3 lit = u_ambientColor * base.rgb
-             + u_lightColor   * base.rgb * diff
-             + u_lightColor   * spec;
-
-    f_col = vec4(lit, base.a);
-}
-)";
-
-// Skinned mesh shader: bone transforms via SSBO at binding 0.
-static const char* kSkinnedVS = R"(#version 450 core
-layout(location = 0) in vec3  a_pos;
-layout(location = 1) in vec3  a_norm;
-layout(location = 2) in vec2  a_uv;
-layout(location = 3) in uvec4 a_boneIdx;
-layout(location = 4) in vec4  a_boneWt;
-layout(std430, binding = 0) readonly buffer BoneBlock { mat4 u_bones[]; };
-uniform mat4 u_vp;
-uniform mat4 u_model;
-out vec3 v_norm;
-out vec3 v_worldPos;
-out vec2 v_uv;
-out vec3 v_vtxCol;
-void main() {
-    mat4 skin = a_boneWt.x * u_bones[a_boneIdx.x]
-              + a_boneWt.y * u_bones[a_boneIdx.y]
-              + a_boneWt.z * u_bones[a_boneIdx.z]
-              + a_boneWt.w * u_bones[a_boneIdx.w];
-    vec4 wp     = u_model * skin * vec4(a_pos, 1.0);
-    gl_Position = u_vp * wp;
-    v_worldPos  = wp.xyz;
-    v_norm   = mat3(transpose(inverse(u_model))) * mat3(skin) * a_norm;
-    v_uv     = a_uv;
-    v_vtxCol = vec3(1.0);  // skinned meshes don't use vertex colour
-}
-)";
-
-// Fragment shader is identical for both mesh and skinned — share kMeshFS.
 
 // ── Shader helper ─────────────────────────────────────────────────────────────
 
@@ -191,9 +72,10 @@ unsigned int GlSceneRenderer::CompileProgram(const char* vs, const char* fs,
 GlSceneRenderer::GlSceneRenderer()
 {
     // Shaders
-    m_primShader    = CompileProgram(kPrimVS,    kPrimFS,  "prim");
-    m_meshShader    = CompileProgram(kMeshVS,    kMeshFS,  "mesh");
-    m_skinnedShader = CompileProgram(kSkinnedVS, kMeshFS,  "skinned");
+    m_primShader    = CompileProgram(kPrimVS,    kPrimFS,    "prim");
+    m_meshShader    = CompileProgram(kMeshVS,    kMeshFS,    "mesh");
+    m_skinnedShader = CompileProgram(kSkinnedVS, kMeshFS,    "skinned");
+    m_terrainShader = CompileProgram(kTerrainVS, kTerrainFS, "terrain");
 
     // Batch VAO / VBO (dynamic, updated each frame)
     glGenVertexArrays(1, &m_batchVao);
@@ -246,6 +128,7 @@ GlSceneRenderer::~GlSceneRenderer()
     if (m_primShader)    glDeleteProgram(m_primShader);
     if (m_meshShader)    glDeleteProgram(m_meshShader);
     if (m_skinnedShader) glDeleteProgram(m_skinnedShader);
+    if (m_terrainShader) glDeleteProgram(m_terrainShader);
 }
 
 // ── FBO management ────────────────────────────────────────────────────────────
@@ -578,6 +461,23 @@ void GlSceneRenderer::FreeTexture(TextureHandle handle)
     m_textures.erase(it);
 }
 
+TextureHandle GlSceneRenderer::UploadBlendMap(const float* data33x33)
+{
+    unsigned int glTex = 0;
+    glGenTextures(1, &glTex);
+    glBindTexture(GL_TEXTURE_2D, glTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 33, 33, 0, GL_RED, GL_FLOAT, data33x33);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    const uint32_t id = m_nextTexId++;
+    m_textures[id] = glTex;
+    return static_cast<TextureHandle>(id);
+}
+
 // ── Draw: static mesh ─────────────────────────────────────────────────────────
 
 void GlSceneRenderer::DrawMesh(MeshHandle handle, const glm::mat4& world,
@@ -613,6 +513,8 @@ void GlSceneRenderer::DrawMesh(MeshHandle handle, const glm::mat4& world,
 
     glUniform1i(glGetUniformLocation(m_meshShader, "u_useVtxColor"),
                 surface.useVertexColor ? 1 : 0);
+    glUniform1i(glGetUniformLocation(m_meshShader, "u_terrainTex"),  surface.terrainTex  ? 1 : 0);
+    glUniform1f(glGetUniformLocation(m_meshShader, "u_terrainTile"), surface.texTileRate);
 
     const bool hasTex = (surface.diffuse != TextureHandle::Invalid);
     glUniform1i(glGetUniformLocation(m_meshShader, "u_hasTex"), hasTex ? 1 : 0);
@@ -716,4 +618,60 @@ void GlSceneRenderer::DrawSkinnedMesh(MeshHandle handle, const glm::mat4& world,
     if (depthWriteOff) glDepthMask(GL_TRUE);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+// ── Draw: terrain tile ────────────────────────────────────────────────────────
+
+void GlSceneRenderer::DrawTerrainTile(MeshHandle handle, const TerrainSurface& surf)
+{
+    auto it = m_meshes.find(static_cast<uint32_t>(handle));
+    if (it == m_meshes.end()) return;
+    const GpuMesh& gm = it->second;
+
+    if (!m_terrainShader) return;
+    glUseProgram(m_terrainShader);
+
+    const glm::mat4 vp = m_proj * m_view;
+    glUniformMatrix4fv(glGetUniformLocation(m_terrainShader, "u_vp"),
+                       1, GL_FALSE, glm::value_ptr(vp));
+
+    const glm::vec3 camPos = glm::inverse(m_view)[3];
+    glUniform3fv(glGetUniformLocation(m_terrainShader, "u_lightDir"),     1, glm::value_ptr(m_lightDir));
+    glUniform3fv(glGetUniformLocation(m_terrainShader, "u_lightColor"),   1, glm::value_ptr(m_lightColor));
+    glUniform3fv(glGetUniformLocation(m_terrainShader, "u_ambientColor"), 1, glm::value_ptr(m_ambientColor));
+    glUniform3fv(glGetUniformLocation(m_terrainShader, "u_camPos"),       1, glm::value_ptr(camPos));
+
+    const int lc = std::max(1, std::min(surf.layerCount, TerrainSurface::kMaxLayers));
+    glUniform1i(glGetUniformLocation(m_terrainShader, "u_layerCount"),   lc);
+    glUniform1i(glGetUniformLocation(m_terrainShader, "u_useVtxColor"),  surf.useVertexColor ? 1 : 0);
+    glUniform1fv(glGetUniformLocation(m_terrainShader, "u_tileRate"),    TerrainSurface::kMaxLayers,
+                 surf.layerRates);
+
+    // Diffuse layer textures → texture units 0-5
+    static const int kLayerUnits[6] = { 0, 1, 2, 3, 4, 5 };
+    for (int i = 0; i < lc; ++i) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        auto texIt = m_textures.find(static_cast<uint32_t>(surf.layers[i]));
+        if (texIt != m_textures.end())
+            glBindTexture(GL_TEXTURE_2D, texIt->second);
+    }
+    glUniform1iv(glGetUniformLocation(m_terrainShader, "u_layer"),
+                 TerrainSurface::kMaxLayers, kLayerUnits);
+
+    // Blend map textures → texture units 6-10
+    static const int kBlendUnits[5] = { 6, 7, 8, 9, 10 };
+    for (int i = 0; i < lc - 1; ++i) {
+        glActiveTexture(GL_TEXTURE6 + i);
+        auto texIt = m_textures.find(static_cast<uint32_t>(surf.blendMaps[i]));
+        if (texIt != m_textures.end())
+            glBindTexture(GL_TEXTURE_2D, texIt->second);
+    }
+    glUniform1iv(glGetUniformLocation(m_terrainShader, "u_blend"),
+                 TerrainSurface::kMaxLayers - 1, kBlendUnits);
+
+    glBindVertexArray(gm.vao);
+    glDrawElements(GL_TRIANGLES, gm.indexCount, GL_UNSIGNED_SHORT, nullptr);
+    glBindVertexArray(0);
+
+    glActiveTexture(GL_TEXTURE0);
 }

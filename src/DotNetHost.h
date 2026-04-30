@@ -1,6 +1,9 @@
 #pragma once
+#include "IPluginBackend.h"
 #include <cstdint>
+#include <map>
 #include <string>
+#include <utility>
 
 // Bootstraps the .NET 10+ runtime and loads SctBridge.dll in-process once at
 // startup. All functions are safe to call even if Init() failed — they return
@@ -90,4 +93,14 @@ struct DotNetHost {
     static bool LandGetData(const char* worldspaceFormKey, int cellX, int cellY,
                             std::string& outJson,
                             char* errOut, int errLen);
+
+    // Fetch all LAND records for a worldspace in one binary round-trip (SLRT format).
+    // Header: magic(4) + version(4) + cellCount(4).
+    // Per cell: int16 cellX + int16 cellY + float[1089] heights + uint8 hasColors
+    //           + [if hasColors] uint8[3267] colors.
+    // outTiles is populated with one LandRecord per cell; existing entries are cleared.
+    static bool WorldspaceGetTerrainBulk(
+        const char* wsFormKey,
+        std::map<std::pair<int,int>, LandRecord>& outTiles,
+        char* errOut, int errLen);
 };

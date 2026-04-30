@@ -46,4 +46,18 @@ struct Camera {
         float     scale   = radius * 0.001f;
         target -= right * (dx * scale) + up * (dy * scale);
     }
+
+    // Rotate in place: keeps the eye position fixed and moves the target so the
+    // camera looks in a new direction.  Used by controller right-stick look.
+    void LookAround(float dAz, float dEl) {
+        const glm::vec3 eye = Eye();
+        azimuth   += dAz;
+        elevation  = std::clamp(elevation + dEl, -89.f, 89.f);
+        const float az = glm::radians(azimuth);
+        const float el = glm::radians(elevation);
+        target = eye - glm::vec3(
+            radius * std::cos(el) * std::sin(az),
+            radius * std::cos(el) * std::cos(az),
+            radius * std::sin(el));
+    }
 };

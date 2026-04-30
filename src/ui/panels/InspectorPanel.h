@@ -14,6 +14,7 @@ public:
 
 private:
     void DrawSceneProperties(AppState& state);
+    void DrawCameraShot(AppState& state, int shotIdx);
     void DrawActorProperties(AppState& state, int castIdx);
     void DrawLinkedNpc(const AppState& state, int castIdx);
     void DrawSkeletonSection(AppState& state, int castIdx);
@@ -21,6 +22,10 @@ private:
     void DrawFaceMorphsSection(AppState& state, int castIdx);
     void DrawSkeletonPickerModal(AppState& state, int castIdx);
     void DrawCellRefProperties(const AppState& state, int refIndex);
+
+    // Camera shot edit buffer — reloaded when shot selection changes
+    int  lastShotSelected_ = -2;
+    char shotNameBuf_[128] = {};
 
     // Identity edit buffers — reloaded when selection changes
     int  lastSelected_     = -2;

@@ -48,6 +48,8 @@ PFNGLGETPROGRAMINFOLOGPROC       glad_glGetProgramInfoLog       = NULL;
 PFNGLGETUNIFORMLOCATIONPROC      glad_glGetUniformLocation      = NULL;
 PFNGLUNIFORM1IPROC               glad_glUniform1i               = NULL;
 PFNGLUNIFORM1FPROC               glad_glUniform1f               = NULL;
+PFNGLUNIFORM1IVPROC              glad_glUniform1iv              = NULL;
+PFNGLUNIFORM1FVPROC              glad_glUniform1fv              = NULL;
 PFNGLUNIFORM4FPROC               glad_glUniform4f               = NULL;
 PFNGLUNIFORM4FVPROC              glad_glUniform4fv              = NULL;
 PFNGLUNIFORM3FVPROC              glad_glUniform3fv              = NULL;
@@ -116,6 +118,8 @@ int gladLoadGL(GLADloadfunc load) {
     LOAD(PFNGLGETUNIFORMLOCATIONPROC,      glGetUniformLocation);
     LOAD(PFNGLUNIFORM1IPROC,               glUniform1i);
     LOAD(PFNGLUNIFORM1FPROC,               glUniform1f);
+    LOAD(PFNGLUNIFORM1IVPROC,              glUniform1iv);
+    LOAD(PFNGLUNIFORM1FVPROC,              glUniform1fv);
     LOAD(PFNGLUNIFORM4FPROC,               glUniform4f);
     LOAD(PFNGLUNIFORM4FVPROC,              glUniform4fv);
     LOAD(PFNGLUNIFORM3FVPROC,              glUniform3fv);

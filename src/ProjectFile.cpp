@@ -10,25 +10,29 @@
 using json = nlohmann::json;
 
 // ── TrackType helpers ─────────────────────────────────────────────────────────
+// Single source of truth for the name↔enum mapping used during serialization.
+// Add a new row here when a new TrackType is introduced; both directions update.
+
+struct TrackTypeEntry { TrackType type; const char* name; };
+static constexpr TrackTypeEntry kTrackTypeTable[] = {
+    { TrackType::AnimClip, "AnimClip" },
+    { TrackType::FaceData, "FaceData" },
+    { TrackType::LookAt,   "LookAt"   },
+    { TrackType::Camera,   "Camera"   },
+    { TrackType::Audio,    "Audio"    },
+};
 
 static const char* TrackTypeName(TrackType t)
 {
-    switch (t) {
-    case TrackType::AnimClip: return "AnimClip";
-    case TrackType::FaceData: return "FaceData";
-    case TrackType::LookAt:   return "LookAt";
-    case TrackType::Camera:   return "Camera";
-    case TrackType::Audio:    return "Audio";
-    default:                  return "AnimClip";
-    }
+    for (const auto& e : kTrackTypeTable)
+        if (e.type == t) return e.name;
+    return kTrackTypeTable[0].name;  // default: AnimClip
 }
 
 static TrackType TrackTypeFromName(const std::string& s)
 {
-    if (s == "FaceData") return TrackType::FaceData;
-    if (s == "LookAt")   return TrackType::LookAt;
-    if (s == "Camera")   return TrackType::Camera;
-    if (s == "Audio")    return TrackType::Audio;
+    for (const auto& e : kTrackTypeTable)
+        if (s == e.name) return e.type;
     return TrackType::AnimClip;
 }
 
@@ -127,6 +131,19 @@ bool ProjectFile::Save(const std::string& path, const AppState& state,
     for (const auto& a : state.actors)
         jActors.push_back({{"castIndex", a.castIndex}});
     root["actors"] = std::move(jActors);
+
+    // Camera shots
+    json jShots = json::array();
+    for (const auto& s : state.cameraShots) {
+        jShots.push_back({
+            {"name",  s.name},
+            {"eyeX",  s.eye.x}, {"eyeY", s.eye.y}, {"eyeZ", s.eye.z},
+            {"yaw",   s.yaw},
+            {"pitch", s.pitch},
+            {"fov",   s.fov},
+        });
+    }
+    root["cameraShots"] = std::move(jShots);
 
     // Sequence
     json jSeq;
@@ -321,6 +338,23 @@ bool ProjectFile::Load(const std::string& path, AppState& state,
         }
     }
 
+    // ── Camera shots — loaded before sequence so scene track items can reference them ──
+    std::vector<int> shotRemap;  // old index → new index (identity after direct restore)
+    if (root.contains("cameraShots")) {
+        for (const auto& js : root["cameraShots"]) {
+            CameraShot shot;
+            shot.name  = js.value("name",  std::string{"Shot"});
+            shot.eye.x = js.value("eyeX",  0.f);
+            shot.eye.y = js.value("eyeY",  0.f);
+            shot.eye.z = js.value("eyeZ",  128.f);
+            shot.yaw   = js.value("yaw",   0.f);
+            shot.pitch = js.value("pitch", 0.f);
+            shot.fov   = js.value("fov",   70.f);
+            shotRemap.push_back((int)state.cameraShots.size());
+            state.cameraShots.push_back(std::move(shot));
+        }
+    }
+
     // ── Sequence ──────────────────────────────────────────────────────────────
     if (root.contains("sequence")) {
         const auto& jseq   = root["sequence"];
@@ -358,8 +392,11 @@ bool ProjectFile::Load(const std::string& path, AppState& state,
                     [type](const TrackLane& l){ return l.type == type; });
                 if (lit == state.sequence.sceneTracks.end()) continue;
                 if (!jl.contains("items")) continue;
+                // Camera track items index into cameraShots[]; use shotRemap.
+                // All other scene track types use clipRemap.
+                const auto& remap = (type == TrackType::Camera) ? shotRemap : clipRemap;
                 for (const auto& ji : jl["items"])
-                    lit->items.push_back(DeserializeItem(ji, clipRemap));
+                    lit->items.push_back(DeserializeItem(ji, remap));
             }
         }
     }
